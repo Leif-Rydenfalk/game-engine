@@ -1,5 +1,5 @@
 use crate::*;
-use cgmath::{Point3, Rad, Vector3};
+use cgmath::Point3;
 use hecs::World;
 
 pub fn setup_camera_entity(world: &mut World) -> hecs::Entity {

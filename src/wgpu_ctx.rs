@@ -3,7 +3,7 @@ use crate::vertex::{create_vertex_buffer_layout, VERTEX_INDEX_LIST, VERTEX_LIST}
 use cgmath::{Matrix4, SquareMatrix};
 use std::borrow::Cow;
 use std::sync::Arc;
-use wgpu::util::{BufferInitDescriptor, DeviceExt, RenderEncoder};
+use wgpu::util::{BufferInitDescriptor, DeviceExt};
 use wgpu::MemoryHints::Performance;
 use wgpu::{SamplerDescriptor, ShaderSource};
 use winit::window::Window;
@@ -88,7 +88,7 @@ impl<'window> WgpuCtx<'window> {
             .expect("Failed to create device");
 
         // 获取窗口内部物理像素尺寸（没有标题栏）
-        let mut size = window.inner_size();
+        let size = window.inner_size();
         // 至少（w = 1, h = 1），否则Wgpu会panic
         let width = size.width.max(1);
         let height = size.height.max(1);

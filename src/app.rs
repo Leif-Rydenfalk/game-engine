@@ -1,5 +1,4 @@
 // app.rs
-use cgmath::Point3;
 use hecs::World;
 use std::sync::Arc;
 use std::time::Instant;
@@ -46,7 +45,7 @@ impl<'window> ApplicationHandler for App<'window> {
         }
     }
 
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
         if let Some(window) = &self.window {
             window.request_redraw();
         }

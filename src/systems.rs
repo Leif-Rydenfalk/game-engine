@@ -1,8 +1,7 @@
 use crate::*;
-use cgmath::{perspective, InnerSpace, Matrix4, Point3, Rad, Vector3, Zero};
+use cgmath::{perspective, InnerSpace, Matrix4, Rad, Vector3, Zero};
 use hecs::World;
 use std::time::Duration;
-use winit::event::MouseButton;
 
 pub fn update_camera_system(world: &mut World, input: &Input, dt: Duration) {
     // Get all entities with both Transform and CameraController components
