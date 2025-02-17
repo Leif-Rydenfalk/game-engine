@@ -1,0 +1,15 @@
+[package]
+name = "fps_engine"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+winit = "0.30.7"
+wgpu = "24.0.1"
+pollster = "0.4"
+bytemuck = { version = "1.21", features = ["derive"] }
+image = "0.25.5"
+env_logger = "0.11.6"
+log = "0.4"
+hecs = "0.10"
+cgmath = "0.18"
