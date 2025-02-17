@@ -24,14 +24,17 @@ pub struct App<'window> {
 }
 
 impl<'window> ApplicationHandler for App<'window> {
+    // In app.rs, update the resumed method:
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_none() {
             let win_attr = Window::default_attributes().with_title("wgpu winit example");
             let window = Arc::new(event_loop.create_window(win_attr).unwrap());
             self.window = Some(window.clone());
             self.wgpu_ctx = Some(WgpuCtx::new(window));
-            self.camera = Camera::new(Point3::new(0.0, 0.0, 2.0));
-            self.camera_controller = CameraController::new(5.0, 0.001);
+
+            // Position the camera to see the cube
+            self.camera = Camera::new(Point3::new(0.0, 1.0, 3.0));
+            self.camera_controller = CameraController::new(2.0, 0.003);
         }
 
         if let Some(window) = &self.window {

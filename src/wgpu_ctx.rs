@@ -30,9 +30,35 @@ pub struct WgpuCtx<'window> {
     bind_group: wgpu::BindGroup,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
+    depth_texture: wgpu::Texture,
+    depth_texture_view: wgpu::TextureView,
 }
 
 impl<'window> WgpuCtx<'window> {
+    fn create_depth_texture(
+        device: &wgpu::Device,
+        config: &wgpu::SurfaceConfiguration,
+    ) -> (wgpu::Texture, wgpu::TextureView) {
+        let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Depth Texture"),
+            size: wgpu::Extent3d {
+                width: config.width,
+                height: config.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Depth32Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+
+        let depth_texture_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        (depth_texture, depth_texture_view)
+    }
+
     pub async fn new_async(window: Arc<Window>) -> WgpuCtx<'window> {
         let instance = wgpu::Instance::default();
         let surface = instance.create_surface(Arc::clone(&window)).unwrap();
@@ -206,6 +232,10 @@ impl<'window> WgpuCtx<'window> {
         let render_pipeline =
             create_pipeline(&device, surface_config.format, &render_pipeline_layout);
 
+        // Create depth texture
+        let (depth_texture, depth_texture_view) =
+            Self::create_depth_texture(&device, &surface_config);
+
         WgpuCtx {
             surface,
             surface_config,
@@ -222,6 +252,8 @@ impl<'window> WgpuCtx<'window> {
             bind_group,
             camera_buffer,
             camera_bind_group,
+            depth_texture,
+            depth_texture_view,
         }
     }
 
@@ -245,8 +277,15 @@ impl<'window> WgpuCtx<'window> {
         self.surface_config.width = width.max(1);
         self.surface_config.height = height.max(1);
         self.surface.configure(&self.device, &self.surface_config);
+
+        // Recreate depth texture with new size
+        let (depth_texture, depth_texture_view) =
+            Self::create_depth_texture(&self.device, &self.surface_config);
+        self.depth_texture = depth_texture;
+        self.depth_texture_view = depth_texture_view;
     }
 
+    // In wgpu_ctx.rs, update the draw method:
     pub fn draw(&mut self) {
         let surface_texture = self
             .surface
@@ -265,46 +304,56 @@ impl<'window> WgpuCtx<'window> {
                     view: &texture_view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::GREEN),
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.1,
+                            g: 0.2,
+                            b: 0.3,
+                            a: 1.0,
+                        }),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
-                depth_stencil_attachment: None,
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_texture_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
+
+            rpass.set_pipeline(&self.render_pipeline);
             rpass.set_bind_group(0, &self.bind_group, &[]);
             rpass.set_bind_group(1, &self.camera_bind_group, &[]);
-            rpass.set_pipeline(&self.render_pipeline);
-            // 消费存放的 vertex_buffer
             rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            // 消费存放的 vertex_index_buffer
             rpass.set_index_buffer(
                 self.vertex_index_buffer.slice(..),
                 wgpu::IndexFormat::Uint16,
             );
-            // 调用draw_indexed，传入对应数量的顶点数量
+
+            // Draw the indexed geometry
             rpass.draw_indexed(0..VERTEX_INDEX_LIST.len() as u32, 0, 0..1);
-            // 顶点有原来的固定3个顶点，调整为根据 VERTEX_LIST 动态来计算
-            rpass.draw(0..VERTEX_LIST.len() as u32, 0..1);
         }
+
         self.queue.write_texture(
-            // 告诉 wgpu 将像素数据复制到何处
             wgpu::TexelCopyTextureInfo {
-                texture: &self.texture, // <-- 纹理对象
+                texture: &self.texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            &self.texture_image.bytes, // <-- 像素rgba二进制数据
-            // 纹理的内存布局
+            &self.texture_image.bytes,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(4 * self.texture_image.width),
                 rows_per_image: Some(self.texture_image.height),
             },
-            self.texture_size, // <-- Extend3d对象
+            self.texture_size,
         );
+
         self.queue.submit(Some(encoder.finish()));
         surface_texture.present();
     }
@@ -315,11 +364,11 @@ fn create_pipeline(
     swap_chain_format: wgpu::TextureFormat,
     pipeline_layout: &wgpu::PipelineLayout,
 ) -> wgpu::RenderPipeline {
-    // Load the shaders from disk
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: None,
         source: ShaderSource::Wgsl(Cow::Borrowed(include_str!("shader.rs"))),
     });
+
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: None,
         layout: Some(pipeline_layout),
@@ -337,9 +386,20 @@ fn create_pipeline(
         }),
         primitive: wgpu::PrimitiveState {
             topology: wgpu::PrimitiveTopology::TriangleList,
-            ..Default::default()
+            strip_index_format: None,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: Some(wgpu::Face::Back),
+            unclipped_depth: false,
+            polygon_mode: wgpu::PolygonMode::Fill,
+            conservative: false,
         },
-        depth_stencil: None,
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: wgpu::TextureFormat::Depth32Float,
+            depth_write_enabled: true,
+            depth_compare: wgpu::CompareFunction::Less,
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
         multisample: wgpu::MultisampleState::default(),
         multiview: None,
         cache: None,
