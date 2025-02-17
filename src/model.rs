@@ -67,6 +67,35 @@ impl Model {
                     crate::img_utils::RgbaImg::new("./assets/images/example-img.png")
                 };
 
+            // Inside the Material handling code
+            let diffuse_texture = if let Some(pbr) =
+                material.pbr_metallic_roughness().base_color_texture()
+            {
+                let texture = pbr.texture();
+                let source = texture.source().source();
+
+                match source {
+                    gltf::image::Source::Uri { uri, .. } => {
+                        let texture_path = path.parent().unwrap().join(uri);
+                        match crate::img_utils::RgbaImg::new(texture_path.to_str().unwrap()) {
+                            Some(texture) => Some(texture),
+                            None => {
+                                eprintln!("Failed to load texture from {}, using fallback", uri);
+                                crate::img_utils::RgbaImg::new("./assets/images/example-img.png")
+                            }
+                        }
+                    }
+                    _ => {
+                        // Fall back to default texture for embedded or unsupported sources
+                        crate::img_utils::RgbaImg::new("./assets/images/example-img.png")
+                    }
+                }
+            } else {
+                // Fall back to default texture
+                crate::img_utils::RgbaImg::new("./assets/images/example-img.png")
+            };
+
+            // Only create a material if the texture exists
             if let Some(texture) = diffuse_texture {
                 materials.push(Material {
                     name,
@@ -75,6 +104,8 @@ impl Model {
                     texture: None,
                     texture_view: None,
                 });
+            } else {
+                eprintln!("Couldn't load any texture for material {}, skipping", name);
             }
         }
 

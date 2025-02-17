@@ -49,18 +49,17 @@ impl<'window> ApplicationHandler for App<'window> {
                 window_size,
             ));
 
-            if let Some(wgpu_ctx) = &mut self.wgpu_ctx {
-                // Load a model
-                if let Some(model_index) = wgpu_ctx.load_model("./assets/models/example-model.gltf")
-                {
-                    // Spawn a model entity
-                    crate::world::spawn_model_entity(
-                        &mut self.world,
-                        model_index,
-                        Point3::new(2.0, 0.0, 0.0), // Position to the right
-                    );
-                }
-            }
+            // if let Some(wgpu_ctx) = &mut self.wgpu_ctx {
+            //     // Load a model
+            //     if let Some(model_index) = wgpu_ctx.load_model("./assets/models/suzanne.gltf") {
+            //         // Spawn a model entity
+            //         crate::world::spawn_model_entity(
+            //             &mut self.world,
+            //             model_index,
+            //             Point3::new(2.0, 0.0, 0.0), // Position to the right
+            //         );
+            //     }
+            // }
 
             // Create player entity
             crate::world::setup_player_entity(&mut self.world);
