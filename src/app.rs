@@ -1,5 +1,6 @@
 // app.rs
 use cgmath::Point3;
+use hecs::World;
 use std::sync::Arc;
 use std::time::Instant;
 use winit::application::ApplicationHandler;
@@ -11,15 +12,15 @@ use winit::window::{Window, WindowId};
 
 use crate::input::Input;
 use crate::wgpu_ctx::WgpuCtx;
-use crate::{Camera, CameraController};
+use crate::*;
 
 #[derive(Default)]
 pub struct App<'window> {
     window: Option<Arc<Window>>,
     wgpu_ctx: Option<WgpuCtx<'window>>,
     input_system: Input,
-    camera: Camera,
-    camera_controller: CameraController,
+    world: World,
+    camera_entity: Option<hecs::Entity>,
     last_frame_time: Option<Instant>,
 }
 
@@ -27,14 +28,17 @@ impl<'window> ApplicationHandler for App<'window> {
     // In app.rs, update the resumed method:
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_none() {
-            let win_attr = Window::default_attributes().with_title("wgpu winit example");
+            let win_attr = Window::default_attributes().with_title("ECS WGPU Example");
             let window = Arc::new(event_loop.create_window(win_attr).unwrap());
             self.window = Some(window.clone());
             self.wgpu_ctx = Some(WgpuCtx::new(window));
 
-            // Position the camera to see the cube
-            self.camera = Camera::new(Point3::new(0.0, 1.0, 3.0));
-            self.camera_controller = CameraController::new(2.0, 0.003);
+            // Initialize ECS world and create camera entity
+            self.world = World::new();
+            self.camera_entity = Some(crate::world::setup_camera_entity(&mut self.world));
+
+            // Create player entity
+            crate::world::setup_player_entity(&mut self.world);
         }
 
         if let Some(window) = &self.window {
@@ -65,20 +69,30 @@ impl<'window> ApplicationHandler for App<'window> {
                 }
             }
             WindowEvent::RedrawRequested => {
-                // Update camera
                 let now = Instant::now();
                 let dt = self
                     .last_frame_time
-                    .map_or(0.0, |t| now.duration_since(t).as_secs_f32());
+                    .map(|t| now.duration_since(t))
+                    .unwrap_or_default();
                 self.last_frame_time = Some(now);
 
-                self.camera_controller
-                    .update_camera(&self.input_system, &mut self.camera, dt);
+                // Update camera system
+                update_camera_system(&mut self.world, &self.input_system, dt);
 
-                if let Some(wgpu_ctx) = self.wgpu_ctx.as_mut() {
-                    wgpu_ctx.update_camera_uniform(self.camera.calc_matrix());
-                    wgpu_ctx.draw();
+                // Update camera matrix in wgpu context
+                if let (Some(wgpu_ctx), Some(camera_entity)) =
+                    (&mut self.wgpu_ctx, self.camera_entity)
+                {
+                    if let Ok((transform, camera)) = self
+                        .world
+                        .query_one_mut::<(&Transform, &Camera)>(camera_entity)
+                    {
+                        let view_proj = calculate_view_projection(transform, camera);
+                        wgpu_ctx.update_camera_uniform(view_proj);
+                        wgpu_ctx.draw();
+                    }
                 }
+
                 self.input_system.update();
             }
             WindowEvent::KeyboardInput { event, .. } => {

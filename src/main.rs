@@ -17,8 +17,14 @@ pub use vertex::*;
 mod wgpu_ctx;
 pub use wgpu_ctx::*;
 
-mod camera;
-pub use camera::*;
+mod components;
+pub use components::*;
+
+mod systems;
+pub use systems::*;
+
+mod world;
+pub use world::*;
 
 fn main() -> Result<(), EventLoopError> {
     let event_loop = EventLoop::new().unwrap();
