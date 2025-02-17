@@ -27,3 +27,17 @@ pub fn setup_camera_entity(world: &mut World, window_size: Option<(u32, u32)>) -
 pub fn setup_player_entity(world: &mut World) -> hecs::Entity {
     world.spawn((Player::default(), Transform::default()))
 }
+
+pub fn spawn_model_entity(
+    world: &mut World,
+    model_index: usize,
+    position: Point3<f32>,
+) -> hecs::Entity {
+    world.spawn((
+        Transform {
+            position,
+            ..Default::default()
+        },
+        ModelInstance { model: model_index },
+    ))
+}

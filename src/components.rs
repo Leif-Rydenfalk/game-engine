@@ -65,3 +65,8 @@ impl Default for Player {
         }
     }
 }
+
+#[derive(Debug)]
+pub struct ModelInstance {
+    pub model: usize, // Index into the model registry
+}

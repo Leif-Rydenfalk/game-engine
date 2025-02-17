@@ -1,3 +1,4 @@
+use cgmath::Point3;
 // app.rs
 use hecs::World;
 use std::sync::Arc;
@@ -47,6 +48,19 @@ impl<'window> ApplicationHandler for App<'window> {
                 &mut self.world,
                 window_size,
             ));
+
+            if let Some(wgpu_ctx) = &mut self.wgpu_ctx {
+                // Load a model
+                if let Some(model_index) = wgpu_ctx.load_model("./assets/models/example-model.gltf")
+                {
+                    // Spawn a model entity
+                    crate::world::spawn_model_entity(
+                        &mut self.world,
+                        model_index,
+                        Point3::new(2.0, 0.0, 0.0), // Position to the right
+                    );
+                }
+            }
 
             // Create player entity
             crate::world::setup_player_entity(&mut self.world);
@@ -99,7 +113,6 @@ impl<'window> ApplicationHandler for App<'window> {
                 // Update camera system
                 update_camera_system(&mut self.world, &self.input_system, dt);
 
-                // Update camera matrix in wgpu context
                 if let (Some(wgpu_ctx), Some(camera_entity)) =
                     (&mut self.wgpu_ctx, self.camera_entity)
                 {
@@ -109,8 +122,11 @@ impl<'window> ApplicationHandler for App<'window> {
                     {
                         let view_proj = calculate_view_projection(transform, camera);
                         wgpu_ctx.update_camera_uniform(view_proj);
-                        wgpu_ctx.draw();
                     }
+                }
+
+                if let Some(wgpu_ctx) = &mut self.wgpu_ctx {
+                    wgpu_ctx.draw(&self.world);
                 }
 
                 self.input_system.update();

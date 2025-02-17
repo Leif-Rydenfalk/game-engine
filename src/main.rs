@@ -26,6 +26,9 @@ pub use systems::*;
 mod world;
 pub use world::*;
 
+mod model;
+pub use model::*;
+
 fn main() -> Result<(), EventLoopError> {
     let event_loop = EventLoop::new().unwrap();
     event_loop.set_control_flow(ControlFlow::Poll);

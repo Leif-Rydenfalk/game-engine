@@ -1,7 +1,9 @@
-use crate::img_utils::RgbaImg;
 use crate::vertex::{create_vertex_buffer_layout, VERTEX_INDEX_LIST, VERTEX_LIST};
+use crate::{Model, ModelInstance, RgbaImg, Transform};
 use cgmath::{Matrix4, SquareMatrix};
+use hecs::World;
 use std::borrow::Cow;
+use std::path::Path;
 use std::sync::Arc;
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 use wgpu::MemoryHints::Performance;
@@ -32,6 +34,8 @@ pub struct WgpuCtx<'window> {
     camera_bind_group: wgpu::BindGroup,
     depth_texture: wgpu::Texture,
     depth_texture_view: wgpu::TextureView,
+    models: Vec<Model>,
+    texture_bind_group_layout: wgpu::BindGroupLayout,
 }
 
 impl<'window> WgpuCtx<'window> {
@@ -236,6 +240,29 @@ impl<'window> WgpuCtx<'window> {
         let (depth_texture, depth_texture_view) =
             Self::create_depth_texture(&device, &surface_config);
 
+        let texture_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+                label: Some("texture_bind_group_layout"),
+            });
+
         WgpuCtx {
             surface,
             surface_config,
@@ -254,6 +281,25 @@ impl<'window> WgpuCtx<'window> {
             camera_bind_group,
             depth_texture,
             depth_texture_view,
+            models: Vec::new(),
+            texture_bind_group_layout,
+        }
+    }
+
+    pub fn load_model<P: AsRef<Path>>(&mut self, path: P) -> Option<usize> {
+        if let Some(mut model) = Model::load(&self.device, &self.queue, path) {
+            // Create bind groups for all materials
+            model.create_bind_groups(&self.device, &self.texture_bind_group_layout);
+
+            // Upload textures to GPU
+            model.upload_textures(&self.queue);
+
+            // Add model to collection and return its index
+            let index = self.models.len();
+            self.models.push(model);
+            Some(index)
+        } else {
+            None
         }
     }
 
@@ -285,8 +331,7 @@ impl<'window> WgpuCtx<'window> {
         self.depth_texture_view = depth_texture_view;
     }
 
-    // In wgpu_ctx.rs, update the draw method:
-    pub fn draw(&mut self) {
+    pub fn draw(&mut self, world: &World) {
         let surface_texture = self
             .surface
             .get_current_texture()
@@ -325,6 +370,7 @@ impl<'window> WgpuCtx<'window> {
                 occlusion_query_set: None,
             });
 
+            // Draw the default cube
             rpass.set_pipeline(&self.render_pipeline);
             rpass.set_bind_group(0, &self.bind_group, &[]);
             rpass.set_bind_group(1, &self.camera_bind_group, &[]);
@@ -333,9 +379,30 @@ impl<'window> WgpuCtx<'window> {
                 self.vertex_index_buffer.slice(..),
                 wgpu::IndexFormat::Uint16,
             );
-
-            // Draw the indexed geometry
             rpass.draw_indexed(0..VERTEX_INDEX_LIST.len() as u32, 0, 0..1);
+
+            // Draw all model instances
+            for (_, (transform, model_instance)) in
+                world.query::<(&Transform, &ModelInstance)>().iter()
+            {
+                if let Some(model) = self.models.get(model_instance.model) {
+                    for mesh in &model.meshes {
+                        if let Some(material_index) = mesh.material_index {
+                            if let Some(material) = model.materials.get(material_index) {
+                                if let Some(bind_group) = &material.bind_group {
+                                    rpass.set_bind_group(0, bind_group, &[]);
+                                    rpass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+                                    rpass.set_index_buffer(
+                                        mesh.index_buffer.slice(..),
+                                        wgpu::IndexFormat::Uint32,
+                                    );
+                                    rpass.draw_indexed(0..mesh.num_elements, 0, 0..1);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         self.queue.write_texture(
