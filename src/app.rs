@@ -24,17 +24,29 @@ pub struct App<'window> {
 }
 
 impl<'window> ApplicationHandler for App<'window> {
-    // In app.rs, update the resumed method:
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_none() {
             let win_attr = Window::default_attributes().with_title("ECS WGPU Example");
             let window = Arc::new(event_loop.create_window(win_attr).unwrap());
             self.window = Some(window.clone());
-            self.wgpu_ctx = Some(WgpuCtx::new(window));
+            self.wgpu_ctx = Some(WgpuCtx::new(window.clone()));
 
-            // Initialize ECS world and create camera entity
+            // Initialize ECS world
             self.world = World::new();
-            self.camera_entity = Some(crate::world::setup_camera_entity(&mut self.world));
+
+            // Get window size for initial aspect ratio
+            let window_size = if let Some(window) = &self.window {
+                let size = window.inner_size();
+                Some((size.width, size.height))
+            } else {
+                None
+            };
+
+            // Setup camera with correct aspect ratio
+            self.camera_entity = Some(crate::world::setup_camera_entity(
+                &mut self.world,
+                window_size,
+            ));
 
             // Create player entity
             crate::world::setup_player_entity(&mut self.world);
@@ -59,11 +71,20 @@ impl<'window> ApplicationHandler for App<'window> {
     ) {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
+            // In app.rs, update the window_event handler for WindowEvent::Resized
             WindowEvent::Resized(new_size) => {
                 if let (Some(wgpu_ctx), Some(window)) =
                     (self.wgpu_ctx.as_mut(), self.window.as_ref())
                 {
                     wgpu_ctx.resize((new_size.width, new_size.height));
+
+                    // Update camera aspect ratio
+                    if let Some(camera_entity) = self.camera_entity {
+                        if let Ok(camera) = self.world.query_one_mut::<&mut Camera>(camera_entity) {
+                            camera.aspect = new_size.width as f32 / new_size.height as f32;
+                        }
+                    }
+
                     window.request_redraw();
                 }
             }
