@@ -433,7 +433,7 @@ fn create_pipeline(
 ) -> wgpu::RenderPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: None,
-        source: ShaderSource::Wgsl(Cow::Borrowed(include_str!("shader.rs"))),
+        source: ShaderSource::Wgsl(Cow::Borrowed(include_str!("shader.txt"))),
     });
 
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
