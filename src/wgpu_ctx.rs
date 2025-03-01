@@ -1,4 +1,4 @@
-use crate::vertex::{create_vertex_buffer_layout, VERTEX_INDEX_LIST, VERTEX_LIST};
+use crate::vertex::{create_vertex_buffer_layout, VERTEX_INDEX_LIST, VERTEX_SQUARE};
 use crate::{Model, ModelInstance, RgbaImg, Transform};
 use cgmath::{Matrix4, SquareMatrix};
 use hecs::World;
@@ -11,9 +11,12 @@ use wgpu::{SamplerDescriptor, ShaderSource};
 use winit::window::Window;
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Default, Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct CameraUniform {
     view_proj: [[f32; 4]; 4],
+    view: [[f32; 4]; 4],
+    position: [f32; 3],
+    _padding: f32,
 }
 
 pub struct WgpuCtx<'window> {
@@ -36,6 +39,36 @@ pub struct WgpuCtx<'window> {
     depth_texture_view: wgpu::TextureView,
     models: Vec<Model>,
     texture_bind_group_layout: wgpu::BindGroupLayout,
+
+    // Bloom textures
+    bloom_mip_texture: wgpu::Texture,
+    bloom_mip_texture_view: wgpu::TextureView,
+    bloom_horizontal_texture: wgpu::Texture,
+    bloom_horizontal_texture_view: wgpu::TextureView,
+    bloom_vertical_texture: wgpu::Texture,
+    bloom_vertical_texture_view: wgpu::TextureView,
+
+    // Bloom compute pipelines and bind groups
+    bloom_mip_compute_pipeline: wgpu::ComputePipeline,
+    bloom_mip_bind_group: wgpu::BindGroup,
+    bloom_horizontal_compute_pipeline: wgpu::ComputePipeline,
+    bloom_horizontal_bind_group: wgpu::BindGroup,
+    bloom_vertical_compute_pipeline: wgpu::ComputePipeline,
+    bloom_vertical_bind_group: wgpu::BindGroup,
+
+    // Updated post-process bind group layout to include both render_texture and bloom_vertical_texture
+    post_process_bind_group_layout: wgpu::BindGroupLayout,
+
+    // New fields for post-processing
+    render_texture: wgpu::Texture,
+    render_texture_view: wgpu::TextureView,
+    output_texture: wgpu::Texture,
+    output_texture_view: wgpu::TextureView,
+    compute_bind_group_layout: wgpu::BindGroupLayout,
+    compute_bind_group: wgpu::BindGroup,
+    compute_pipeline: wgpu::ComputePipeline,
+    post_process_pipeline: wgpu::RenderPipeline,
+    post_process_bind_group: wgpu::BindGroup,
 }
 
 impl<'window> WgpuCtx<'window> {
@@ -64,7 +97,10 @@ impl<'window> WgpuCtx<'window> {
     }
 
     pub async fn new_async(window: Arc<Window>) -> WgpuCtx<'window> {
-        let instance = wgpu::Instance::default();
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::VULKAN,
+            ..Default::default()
+        });
         let surface = instance.create_surface(Arc::clone(&window)).unwrap();
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -75,16 +111,21 @@ impl<'window> WgpuCtx<'window> {
             })
             .await
             .expect("Failed to find an appropriate adapter");
-        // Create the logical device and command queue
+        println!(
+            "Max storage buffers per shader stage: {}",
+            adapter.limits().max_storage_buffers_per_shader_stage
+        );
+
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: None,
                     required_features: wgpu::Features::empty(),
-                    // Make sure we use the texture resolution limits from the adapter, so we can support images the size of the swapchain.
-                    required_limits: wgpu::Limits::downlevel_webgl2_defaults()
-                        .using_resolution(adapter.limits()),
-                    memory_hints: Performance,
+                    required_limits: wgpu::Limits {
+                        max_storage_buffers_per_shader_stage: 2,
+                        ..wgpu::Limits::default()
+                    },
+                    memory_hints: wgpu::MemoryHints::Performance,
                 },
                 None,
             )
@@ -101,7 +142,7 @@ impl<'window> WgpuCtx<'window> {
         // 完成首次配置
         surface.configure(&device, &surface_config);
 
-        let bytes: &[u8] = bytemuck::cast_slice(&VERTEX_LIST);
+        let bytes: &[u8] = bytemuck::cast_slice(&VERTEX_SQUARE);
         let vertex_buffer = device.create_buffer_init(&BufferInitDescriptor {
             label: None,
             contents: bytes,
@@ -145,6 +186,9 @@ impl<'window> WgpuCtx<'window> {
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear, // Enable bilinear interpolation for magnification
+            min_filter: wgpu::FilterMode::Linear, // Enable bilinear interpolation for minification
+            mipmap_filter: wgpu::FilterMode::Linear, // Enable linear interpolation between mip levels (if used)
             ..Default::default()
         });
 
@@ -192,6 +236,7 @@ impl<'window> WgpuCtx<'window> {
         // Create camera uniform buffer
         let camera_uniform = CameraUniform {
             view_proj: Matrix4::identity().into(),
+            ..Default::default()
         };
         let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Camera Buffer"),
@@ -204,7 +249,7 @@ impl<'window> WgpuCtx<'window> {
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -263,6 +308,453 @@ impl<'window> WgpuCtx<'window> {
                 label: Some("texture_bind_group_layout"),
             });
 
+        // Create render texture (scene rendering target)
+        let render_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Render Texture"),
+            size: wgpu::Extent3d {
+                width: surface_config.width,
+                height: surface_config.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: surface_config.format, // Typically Rgba8UnormSrgb
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let render_texture_view =
+            render_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        // Create output texture (compute shader output)
+        let output_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Output Texture"),
+            size: wgpu::Extent3d {
+                width: surface_config.width,
+                height: surface_config.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float, // Linear space for storage
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+
+        let output_texture_view =
+            output_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        // Create compute bind group layout
+        // In WgpuCtx::new_async, replace the compute bind group layout
+        let compute_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Compute Bind Group Layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::StorageTexture {
+                            access: wgpu::StorageTextureAccess::WriteOnly,
+                            format: wgpu::TextureFormat::Rgba16Float,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+
+        // Create compute bind group
+        let compute_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &compute_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&render_texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&output_texture_view),
+                },
+            ],
+            label: Some("compute_bind_group"),
+        });
+
+        // Define and create compute shader
+        const COMPUTE_SHADER_SOURCE: &str = include_str!("post_processing.txt");
+
+        let compute_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Compute Shader"),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(COMPUTE_SHADER_SOURCE)),
+        });
+
+        let compute_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Compute Pipeline Layout"),
+                bind_group_layouts: &[&compute_bind_group_layout],
+                push_constant_ranges: &[],
+            });
+
+        let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("Compute Pipeline"),
+            layout: Some(&compute_pipeline_layout),
+            module: &compute_shader,
+            entry_point: Some("main"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+
+        // Create bloom_mip_texture
+        let bloom_mip_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Bloom Mip Texture"),
+            size: wgpu::Extent3d {
+                width: surface_config.width,
+                height: surface_config.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let bloom_mip_texture_view =
+            bloom_mip_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        // Create bloom_horizontal_texture
+        let bloom_horizontal_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Bloom Horizontal Texture"),
+            size: wgpu::Extent3d {
+                width: surface_config.width,
+                height: surface_config.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let bloom_horizontal_texture_view =
+            bloom_horizontal_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        // Create bloom_vertical_texture
+        let bloom_vertical_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Bloom Vertical Texture"),
+            size: wgpu::Extent3d {
+                width: surface_config.width,
+                height: surface_config.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let bloom_vertical_texture_view =
+            bloom_vertical_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let bloom_mip_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Bloom Mip Shader"),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("bloom_mip.txt"))),
+        });
+
+        let bloom_mip_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Bloom Mip Bind Group Layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::StorageTexture {
+                            access: wgpu::StorageTextureAccess::WriteOnly,
+                            format: wgpu::TextureFormat::Rgba16Float,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+
+        let bloom_mip_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &bloom_mip_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&render_texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&bloom_mip_texture_view),
+                },
+            ],
+            label: Some("bloom_mip_bind_group"),
+        });
+
+        let bloom_mip_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Bloom Mip Pipeline Layout"),
+                bind_group_layouts: &[&bloom_mip_bind_group_layout],
+                push_constant_ranges: &[],
+            });
+
+        let bloom_mip_compute_pipeline =
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("Bloom Mip Compute Pipeline"),
+                layout: Some(&bloom_mip_pipeline_layout),
+                module: &bloom_mip_shader,
+                entry_point: Some("main"),
+                compilation_options: Default::default(),
+                cache: None,
+            });
+
+        let bloom_horizontal_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Bloom Horizontal Shader"),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("bloom_horizontal.txt"))),
+        });
+
+        let bloom_horizontal_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Bloom Horizontal Bind Group Layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::StorageTexture {
+                            access: wgpu::StorageTextureAccess::WriteOnly,
+                            format: wgpu::TextureFormat::Rgba16Float,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+
+        let bloom_horizontal_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &bloom_horizontal_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&bloom_mip_texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&bloom_horizontal_texture_view),
+                },
+            ],
+            label: Some("bloom_horizontal_bind_group"),
+        });
+
+        let bloom_horizontal_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Bloom Horizontal Pipeline Layout"),
+                bind_group_layouts: &[&bloom_horizontal_bind_group_layout],
+                push_constant_ranges: &[],
+            });
+
+        let bloom_horizontal_compute_pipeline =
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("Bloom Horizontal Compute Pipeline"),
+                layout: Some(&bloom_horizontal_pipeline_layout),
+                module: &bloom_horizontal_shader,
+                entry_point: Some("main"),
+                compilation_options: Default::default(),
+                cache: None,
+            });
+
+        let bloom_vertical_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Bloom Vertical Shader"),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("bloom_vertical.txt"))),
+        });
+
+        let bloom_vertical_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Bloom Vertical Bind Group Layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::StorageTexture {
+                            access: wgpu::StorageTextureAccess::WriteOnly,
+                            format: wgpu::TextureFormat::Rgba16Float,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+
+        let bloom_vertical_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &bloom_vertical_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&bloom_horizontal_texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&bloom_vertical_texture_view),
+                },
+            ],
+            label: Some("bloom_vertical_bind_group"),
+        });
+
+        let bloom_vertical_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Bloom Vertical Pipeline Layout"),
+                bind_group_layouts: &[&bloom_vertical_bind_group_layout],
+                push_constant_ranges: &[],
+            });
+
+        let bloom_vertical_compute_pipeline =
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("Bloom Vertical Compute Pipeline"),
+                layout: Some(&bloom_vertical_pipeline_layout),
+                module: &bloom_vertical_shader,
+                entry_point: Some("main"),
+                compilation_options: Default::default(),
+                cache: None,
+            });
+
+        let post_process_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Post Process Bind Group Layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+
+        let post_process_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &post_process_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&render_texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&bloom_vertical_texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+            label: Some("post_process_bind_group"),
+        });
+
+        let post_process_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Post Process Pipeline Layout"),
+                bind_group_layouts: &[&post_process_bind_group_layout],
+                push_constant_ranges: &[],
+            });
+
+        let post_process_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Post Process Shader"),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("apply_bloom.txt"))),
+        });
+
+        let post_process_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Post Process Pipeline"),
+                layout: Some(&post_process_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &post_process_shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &post_process_shader,
+                    entry_point: Some("fs_main"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(surface_config.format.into())],
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleStrip,
+                    strip_index_format: None,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: None,
+                    unclipped_depth: false,
+                    polygon_mode: wgpu::PolygonMode::Fill,
+                    conservative: false,
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
+            });
+
         WgpuCtx {
             surface,
             surface_config,
@@ -282,7 +774,29 @@ impl<'window> WgpuCtx<'window> {
             depth_texture,
             depth_texture_view,
             models: Vec::new(),
+            bloom_mip_texture,
+            bloom_mip_texture_view,
+            bloom_horizontal_texture,
+            bloom_horizontal_texture_view,
+            bloom_vertical_texture,
+            bloom_vertical_texture_view,
+            bloom_mip_compute_pipeline,
+            bloom_mip_bind_group,
+            bloom_horizontal_compute_pipeline,
+            bloom_horizontal_bind_group,
+            bloom_vertical_compute_pipeline,
+            bloom_vertical_bind_group,
+            post_process_bind_group_layout,
+            post_process_pipeline,
+            post_process_bind_group,
             texture_bind_group_layout,
+            render_texture,
+            render_texture_view,
+            output_texture,
+            output_texture_view,
+            compute_bind_group_layout,
+            compute_bind_group,
+            compute_pipeline,
         }
     }
 
@@ -303,9 +817,17 @@ impl<'window> WgpuCtx<'window> {
         }
     }
 
-    pub fn update_camera_uniform(&mut self, view_proj: Matrix4<f32>) {
+    pub fn update_camera_uniform(
+        &mut self,
+        view_proj: Matrix4<f32>,
+        view: Matrix4<f32>,
+        position: [f32; 3],
+    ) {
         let camera_uniform = CameraUniform {
             view_proj: view_proj.into(),
+            view: view.into(),
+            position,
+            _padding: Default::default(),
         };
         self.queue.write_buffer(
             &self.camera_buffer,
@@ -324,11 +846,167 @@ impl<'window> WgpuCtx<'window> {
         self.surface_config.height = height.max(1);
         self.surface.configure(&self.device, &self.surface_config);
 
-        // Recreate depth texture with new size
+        // Recreate depth texture
         let (depth_texture, depth_texture_view) =
             Self::create_depth_texture(&self.device, &self.surface_config);
         self.depth_texture = depth_texture;
         self.depth_texture_view = depth_texture_view;
+
+        // Recreate render_texture
+        self.render_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Render Texture"),
+            size: wgpu::Extent3d {
+                width: self.surface_config.width,
+                height: self.surface_config.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: self.surface_config.format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        self.render_texture_view = self
+            .render_texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        // Recreate bloom_mip_texture
+        self.bloom_mip_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Bloom Mip Texture"),
+            size: wgpu::Extent3d {
+                width: self.surface_config.width,
+                height: self.surface_config.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        self.bloom_mip_texture_view = self
+            .bloom_mip_texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        // Recreate bloom_horizontal_texture
+        self.bloom_horizontal_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Bloom Horizontal Texture"),
+            size: wgpu::Extent3d {
+                width: self.surface_config.width,
+                height: self.surface_config.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        self.bloom_horizontal_texture_view = self
+            .bloom_horizontal_texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        // Recreate bloom_vertical_texture
+        self.bloom_vertical_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Bloom Vertical Texture"),
+            size: wgpu::Extent3d {
+                width: self.surface_config.width,
+                height: self.surface_config.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        self.bloom_vertical_texture_view = self
+            .bloom_vertical_texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        // Recreate bloom bind groups
+        self.bloom_mip_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &self.bloom_mip_compute_pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&self.render_texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&self.bloom_mip_texture_view),
+                },
+            ],
+            label: Some("bloom_mip_bind_group"),
+        });
+
+        self.bloom_horizontal_bind_group =
+            self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                layout: &self
+                    .bloom_horizontal_compute_pipeline
+                    .get_bind_group_layout(0),
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&self.bloom_mip_texture_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(
+                            &self.bloom_horizontal_texture_view,
+                        ),
+                    },
+                ],
+                label: Some("bloom_horizontal_bind_group"),
+            });
+
+        self.bloom_vertical_bind_group =
+            self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                layout: &self
+                    .bloom_vertical_compute_pipeline
+                    .get_bind_group_layout(0),
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(
+                            &self.bloom_horizontal_texture_view,
+                        ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(
+                            &self.bloom_vertical_texture_view,
+                        ),
+                    },
+                ],
+                label: Some("bloom_vertical_bind_group"),
+            });
+
+        // Recreate post_process_bind_group
+        self.post_process_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &self.post_process_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&self.render_texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&self.bloom_vertical_texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+            ],
+            label: Some("post_process_bind_group"),
+        });
+
+        // Remove or update output_texture recreation if no longer needed
     }
 
     pub fn draw(&mut self, world: &World) {
@@ -336,23 +1014,25 @@ impl<'window> WgpuCtx<'window> {
             .surface
             .get_current_texture()
             .expect("Failed to acquire next swap chain texture");
-        let texture_view = surface_texture
+        let surface_texture_view = surface_texture
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+
+        // Step 1: Render the scene to render_texture (unchanged)
         {
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: None,
+                label: Some("Scene Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &texture_view,
+                    view: &self.render_texture_view,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.1,
-                            g: 0.2,
-                            b: 0.3,
+                            r: 0.0,
+                            g: 0.0,
+                            b: 0.0,
                             a: 1.0,
                         }),
                         store: wgpu::StoreOp::Store,
@@ -370,7 +1050,6 @@ impl<'window> WgpuCtx<'window> {
                 occlusion_query_set: None,
             });
 
-            // Draw the default cube
             rpass.set_pipeline(&self.render_pipeline);
             rpass.set_bind_group(0, &self.bind_group, &[]);
             rpass.set_bind_group(1, &self.camera_bind_group, &[]);
@@ -381,7 +1060,6 @@ impl<'window> WgpuCtx<'window> {
             );
             rpass.draw_indexed(0..VERTEX_INDEX_LIST.len() as u32, 0, 0..1);
 
-            // Draw all model instances
             for (_, (transform, model_instance)) in
                 world.query::<(&Transform, &ModelInstance)>().iter()
             {
@@ -405,6 +1083,81 @@ impl<'window> WgpuCtx<'window> {
             }
         }
 
+        // Step 2: Generate bloom_mip_texture
+        {
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Bloom Mip Compute Pass"),
+                timestamp_writes: None,
+            });
+            cpass.set_pipeline(&self.bloom_mip_compute_pipeline);
+            cpass.set_bind_group(0, &self.bloom_mip_bind_group, &[]);
+            let workgroup_size = 8;
+            let workgroup_count_x =
+                (self.surface_config.width + workgroup_size - 1) / workgroup_size;
+            let workgroup_count_y =
+                (self.surface_config.height + workgroup_size - 1) / workgroup_size;
+            cpass.dispatch_workgroups(workgroup_count_x, workgroup_count_y, 1);
+        }
+
+        // Step 3: Apply horizontal blur
+        {
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Bloom Horizontal Compute Pass"),
+                timestamp_writes: None,
+            });
+            cpass.set_pipeline(&self.bloom_horizontal_compute_pipeline);
+            cpass.set_bind_group(0, &self.bloom_horizontal_bind_group, &[]);
+            let workgroup_size = 8;
+            let workgroup_count_x =
+                (self.surface_config.width + workgroup_size - 1) / workgroup_size;
+            let workgroup_count_y =
+                (self.surface_config.height + workgroup_size - 1) / workgroup_size;
+            cpass.dispatch_workgroups(workgroup_count_x, workgroup_count_y, 1);
+        }
+
+        // Step 4: Apply vertical blur
+        {
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Bloom Vertical Compute Pass"),
+                timestamp_writes: None,
+            });
+            cpass.set_pipeline(&self.bloom_vertical_compute_pipeline);
+            cpass.set_bind_group(0, &self.bloom_vertical_bind_group, &[]);
+            let workgroup_size = 8;
+            let workgroup_count_x =
+                (self.surface_config.width + workgroup_size - 1) / workgroup_size;
+            let workgroup_count_y =
+                (self.surface_config.height + workgroup_size - 1) / workgroup_size;
+            cpass.dispatch_workgroups(workgroup_count_x, workgroup_count_y, 1);
+        }
+
+        // Step 5: Render to surface with bloom
+        {
+            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Post Process Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &surface_texture_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.0,
+                            g: 0.0,
+                            b: 0.0,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            rpass.set_pipeline(&self.post_process_pipeline);
+            rpass.set_bind_group(0, &self.post_process_bind_group, &[]);
+            rpass.draw(0..4, 0..1); // Draw full-screen quad
+        }
+
+        // Write texture data (if still needed)
         self.queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &self.texture,
@@ -433,7 +1186,7 @@ fn create_pipeline(
 ) -> wgpu::RenderPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: None,
-        source: ShaderSource::Wgsl(Cow::Borrowed(include_str!("shader.txt"))),
+        source: ShaderSource::Wgsl(Cow::Borrowed(include_str!("atmosphere.txt"))),
     });
 
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {

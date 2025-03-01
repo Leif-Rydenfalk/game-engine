@@ -12,13 +12,20 @@ pub fn update_camera_system(world: &mut World, input: &Input, dt: Duration) {
         if input.is_mouse_button_down(winit::event::MouseButton::Left) {
             let mouse_delta = input.mouse_delta();
             transform.rotation.1 += Rad(mouse_delta.0 as f32 * controller.look_speed); // yaw
-            transform.rotation.0 += Rad(-mouse_delta.1 as f32 * controller.look_speed); // pitch
+            transform.rotation.0 += Rad(-mouse_delta.1 as f32 * controller.look_speed);
 
             // Clamp pitch to prevent camera flipping
             transform.rotation.0 .0 = transform.rotation.0 .0.clamp(
                 -std::f32::consts::FRAC_PI_2 + 0.1,
                 std::f32::consts::FRAC_PI_2 - 0.1,
             );
+
+            // // Allow full rotation but flip the up vector when the camera is "upside down"
+            // let up = if transform.rotation.0 .0.abs() > std::f32::consts::FRAC_PI_2 {
+            //     -Vector3::unit_y()
+            // } else {
+            //     Vector3::unit_y()
+            // };
         }
 
         // Calculate movement vectors
@@ -72,4 +79,8 @@ pub fn calculate_view_projection(transform: &Transform, camera: &Camera) -> Matr
     let view = calculate_view_matrix(transform);
     let proj = perspective(camera.fov, camera.aspect, camera.near, camera.far);
     proj * view
+}
+
+pub fn calculate_view(transform: &Transform, camera: &Camera) -> Matrix4<f32> {
+    calculate_view_matrix(transform)
 }

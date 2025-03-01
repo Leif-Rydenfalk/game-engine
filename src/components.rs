@@ -52,21 +52,6 @@ impl Default for CameraController {
 }
 
 #[derive(Debug)]
-pub struct Player {
-    pub health: f32,
-    pub stamina: f32,
-}
-
-impl Default for Player {
-    fn default() -> Self {
-        Self {
-            health: 100.0,
-            stamina: 100.0,
-        }
-    }
-}
-
-#[derive(Debug)]
 pub struct ModelInstance {
     pub model: usize, // Index into the model registry
 }

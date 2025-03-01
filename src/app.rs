@@ -1,4 +1,4 @@
-use cgmath::Point3;
+use cgmath::{EuclideanSpace, Point3};
 // app.rs
 use hecs::World;
 use std::sync::Arc;
@@ -60,9 +60,6 @@ impl<'window> ApplicationHandler for App<'window> {
             //         );
             //     }
             // }
-
-            // Create player entity
-            crate::world::setup_player_entity(&mut self.world);
         }
 
         if let Some(window) = &self.window {
@@ -120,7 +117,8 @@ impl<'window> ApplicationHandler for App<'window> {
                         .query_one_mut::<(&Transform, &Camera)>(camera_entity)
                     {
                         let view_proj = calculate_view_projection(transform, camera);
-                        wgpu_ctx.update_camera_uniform(view_proj);
+                        let view = calculate_view_matrix(transform);
+                        wgpu_ctx.update_camera_uniform(view_proj, view, transform.position.into());
                     }
                 }
 

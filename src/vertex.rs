@@ -6,9 +6,31 @@ pub struct Vertex {
     pub normal: [f32; 3],
 }
 
-// ... (bytemuck impls remain the same)
+pub const VERTEX_SQUARE: &[Vertex] = &[
+    // Front face
+    Vertex {
+        position: [-0.5, -0.5, 0.0],
+        tex_uv: [0.0, 0.0],
+        normal: [0.0, 0.0, 1.0],
+    },
+    Vertex {
+        position: [0.5, -0.5, 0.0],
+        tex_uv: [1.0, 0.0],
+        normal: [0.0, 0.0, 1.0],
+    },
+    Vertex {
+        position: [0.5, 0.5, 0.0],
+        tex_uv: [1.0, 1.0],
+        normal: [0.0, 0.0, 1.0],
+    },
+    Vertex {
+        position: [-0.5, 0.5, 0.0],
+        tex_uv: [0.0, 1.0],
+        normal: [0.0, 0.0, 1.0],
+    },
+];
 
-pub const VERTEX_LIST: &[Vertex] = &[
+pub const VERTEX_CUBE: &[Vertex] = &[
     // Front face
     Vertex {
         position: [-0.5, -0.5, 0.5],
