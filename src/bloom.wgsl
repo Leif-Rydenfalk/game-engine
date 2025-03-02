@@ -64,7 +64,7 @@ fn downsample_main(@builtin(global_invocation_id) id: vec3<u32>) {
 }
 
 // Blur Shaders (5-tap Gaussian)
-const BLUR_WEIGHTS: array<f32, 5> = array<f32, 5>(0.227027, 0.1945946, 0.1216216, 0.054054, 0.016216);
+const BLUR_WEIGHTS: array<f32, 5> = array<f32, 5>(0.19638062, 0.29675293, 0.09442139, 0.01037598, 0.00025940);
 
 @compute @workgroup_size(8, 8)
 fn horizontal_blur_main(@builtin(global_invocation_id) id: vec3<u32>) {
@@ -99,8 +99,6 @@ fn vertical_blur_main(@builtin(global_invocation_id) id: vec3<u32>) {
     }
     textureStore(output_texture, vec2<i32>(i32(id.x), i32(id.y)), vec4<f32>(color, 1.0));
 }
-
-const COMPOSITION_WEIGHTS: array<f32, 8> = array<f32, 8>(0.227027, 0.1945946, 0.1216216, 0.054054, 0.016216, 0.004054, 0.001216, 0.000316);
 
 // Scene and output textures
 @group(1) @binding(0) var scene_tex: texture_2d<f32>;
@@ -159,18 +157,21 @@ fn composite_main(@builtin(global_invocation_id) id: vec3<u32>) {
     // Calculate UV coordinates (normalized [0,1] space)
     let uv = (vec2<f32>(id.xy) + 0.5) / vec2<f32>(dims.xy);
     
-    // Sample scene texture
-    var color = textureLoad(scene_tex, vec2<i32>(i32(id.x), i32(id.y)), 0).rgb;
+    var bloom = vec3(0.0);
 
     // Sample bloom textures with bicubic filtering and add contributions
-    color += textureSampleBicubic(bloom0, bloom_sampler, uv).rgb * COMPOSITION_WEIGHTS[0];
-    color += textureSampleBicubic(bloom1, bloom_sampler, uv).rgb * COMPOSITION_WEIGHTS[1];
-    color += textureSampleBicubic(bloom2, bloom_sampler, uv).rgb * COMPOSITION_WEIGHTS[2];
-    color += textureSampleBicubic(bloom3, bloom_sampler, uv).rgb * COMPOSITION_WEIGHTS[3];
-    color += textureSampleBicubic(bloom4, bloom_sampler, uv).rgb * COMPOSITION_WEIGHTS[4];
-    color += textureSampleBicubic(bloom5, bloom_sampler, uv).rgb * COMPOSITION_WEIGHTS[5];
-    color += textureSampleBicubic(bloom6, bloom_sampler, uv).rgb * COMPOSITION_WEIGHTS[6];
-    color += textureSampleBicubic(bloom7, bloom_sampler, uv).rgb * COMPOSITION_WEIGHTS[7];
+    bloom += textureSampleBicubic(bloom0, bloom_sampler, uv).rgb * 1.0;
+    bloom += textureSampleBicubic(bloom1, bloom_sampler, uv).rgb * 1.5;
+    bloom += textureSampleBicubic(bloom2, bloom_sampler, uv).rgb * 1.0;
+    bloom += textureSampleBicubic(bloom3, bloom_sampler, uv).rgb * 1.5;
+    bloom += textureSampleBicubic(bloom4, bloom_sampler, uv).rgb * 1.8;
+    bloom += textureSampleBicubic(bloom5, bloom_sampler, uv).rgb * 1.0;
+    bloom += textureSampleBicubic(bloom6, bloom_sampler, uv).rgb * 1.0;
+    bloom += textureSampleBicubic(bloom7, bloom_sampler, uv).rgb * 1.0;
+
+    // Sample scene texture
+    var color = textureLoad(scene_tex, vec2<i32>(i32(id.x), i32(id.y)), 0).rgb;
+    color += bloom * 0.05;
 
     // Write to output texture
     textureStore(output_tex, vec2<i32>(i32(id.x), i32(id.y)), vec4<f32>(color, 1.0));
