@@ -46,25 +46,3 @@ fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     color /= weight_sum;
     return vec4(color, 1.0);
 }
-
-// @fragment
-// fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
-//     var color = vec3(0.0);
-//     if (uv.y < 0.52) {
-//         let dims = textureDimensions(t_input);
-//         let texel_size = vec2(1.0 / f32(dims.x), 1.0 / f32(dims.y)); // Corrected
-//         var weight_sum = 0.0;
-//         color += textureSample(t_input, s, uv).rgb * WEIGHTS[0];
-//         weight_sum += WEIGHTS[0];
-//         for (var i = 1u; i < 5u; i = i + 1u) {
-//             let offset = vec2(0.0, OFFSETS[i] * texel_size.y * 0.5); // Scaled by 0.5
-//             color += textureSample(t_input, s, uv + offset).rgb * WEIGHTS[i];
-//             color += textureSample(t_input, s, uv - offset).rgb * WEIGHTS[i];
-//             weight_sum += WEIGHTS[i] * 2.0;
-//         }
-//         color /= weight_sum;
-//     } else {
-//         color = textureSample(t_input, s, uv).rgb;
-//     }
-//     return vec4(color, 1.0);
-// }
