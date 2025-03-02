@@ -237,15 +237,6 @@ fn apply_fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     var color = textureSample(t_scene, s, uv).rgb;
     color += get_bloom(uv) * 0.05; // Adjust bloom intensity
     color *= 200.0;
-
-    // Existing tonemapping
-    color = pow(color, vec3<f32>(1.5));
-    color = color / (1.0 + color);
-    color = pow(color, vec3<f32>(1.0 / 1.5));
-    color = mix(color, color * color * (3.0 - 2.0 * color), vec3<f32>(1.0));
-    color = pow(color, vec3<f32>(1.3, 1.20, 1.0));
-    color = pow(color, vec3<f32>(0.7 / 2.2));
-
     return vec4<f32>(color, 1.0);
 }
 
@@ -257,18 +248,6 @@ fn calc_offset(octave: f32) -> vec2<f32> {
     offset.y = -(1.0 - (1.0 / exp2(octave))) - padding.y * octave;
     offset.y += min(1.0, floor(octave / 3.0)) * 0.35;
     return offset;
-}
-
-fn tonemap(color: vec3<f32>) -> vec3<f32> {
-    var c = color;
-    c = pow(c, vec3<f32>(1.5));
-    c = c / (1.0 + c);
-    c = pow(c, vec3<f32>(1.0 / 1.5));
-    c = mix(c, c * c * (3.0 - 2.0 * c), vec3<f32>(1.0));
-    c = pow(c, vec3<f32>(1.3, 1.20, 1.0));
-    c = clamp(c * 1.01, vec3<f32>(0.0), vec3<f32>(1.0));
-    c = pow(c, vec3<f32>(0.7 / 2.2));
-    return c;
 }
 
 // Bright extraction shader
