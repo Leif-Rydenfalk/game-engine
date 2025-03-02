@@ -84,8 +84,8 @@ impl BloomEffect {
         let vertical_blur_views = create_mip_views(&vertical_blur_texture, max_level);
 
         let settings = BloomSettings {
-            min_brightness: 0.8,
-            max_brightness: 1.2,
+            min_brightness: 0.0,
+            max_brightness: 1.0,
             blur_radius: 1.0,
             blur_type: 0,
         };
@@ -139,18 +139,27 @@ impl BloomEffect {
 
         let group2_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Bloom Textures Bind Group Layout"),
-            entries: &(0..8)
-                .map(|i| wgpu::BindGroupLayoutEntry {
-                    binding: i,
+            entries: &{
+                let mut entries = (0..8)
+                    .map(|i| wgpu::BindGroupLayoutEntry {
+                        binding: i,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    })
+                    .collect::<Vec<_>>();
+                entries.push(wgpu::BindGroupLayoutEntry {
+                    binding: 8,
                     visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Texture {
-                        multisampled: false,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    },
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
-                })
-                .collect::<Vec<_>>(),
+                });
+                entries
+            },
         });
 
         let compute_bind_group_layout =
@@ -656,6 +665,10 @@ impl BloomEffect {
                     wgpu::BindGroupEntry {
                         binding: 7,
                         resource: wgpu::BindingResource::TextureView(&self.vertical_blur_views[7]),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 8,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
                     },
                 ],
                 label: Some("Composite Group 2 Bind Group"),

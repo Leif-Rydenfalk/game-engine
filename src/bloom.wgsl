@@ -102,8 +102,11 @@ fn vertical_blur_main(@builtin(global_invocation_id) id: vec3<u32>) {
 
 const COMPOSITION_WEIGHTS: array<f32, 8> = array<f32, 8>(0.227027, 0.1945946, 0.1216216, 0.054054, 0.016216, 0.004054, 0.001216, 0.000316);
 
-// Composite Shader
+// Scene and output textures
 @group(1) @binding(0) var scene_tex: texture_2d<f32>;
+@group(1) @binding(1) var output_tex: texture_storage_2d<rgba32float, write>;
+
+// Bloom textures and sampler
 @group(2) @binding(0) var bloom0: texture_2d<f32>;
 @group(2) @binding(1) var bloom1: texture_2d<f32>;
 @group(2) @binding(2) var bloom2: texture_2d<f32>;
@@ -112,7 +115,39 @@ const COMPOSITION_WEIGHTS: array<f32, 8> = array<f32, 8>(0.227027, 0.1945946, 0.
 @group(2) @binding(5) var bloom5: texture_2d<f32>;
 @group(2) @binding(6) var bloom6: texture_2d<f32>;
 @group(2) @binding(7) var bloom7: texture_2d<f32>;
-@group(1) @binding(1) var output_tex: texture_storage_2d<rgba32float, write>;
+@group(2) @binding(8) var bloom_sampler: sampler;
+
+
+fn cubic(v: f32) -> vec4<f32> {
+    let n = vec4<f32>(1.0, 2.0, 3.0, 4.0) - v;
+    let s = n * n * n;
+    let x = s.x;
+    let y = s.y - 4.0 * s.x;
+    let z = s.z - 4.0 * s.y + 6.0 * s.x;
+    let w = 6.0 - x - y - z;
+    return vec4<f32>(x, y, z, w) * (1.0 / 6.0);
+}
+
+fn textureSampleBicubic(tex: texture_2d<f32>, tex_sampler: sampler, texCoords: vec2<f32>) -> vec4<f32> {
+    let texture_size = vec2<f32>(textureDimensions(tex).xy);
+    let invTexSize = 1.0 / texture_size;
+    var texCoordsAdjusted = texCoords * texture_size - 0.5;
+    let fxy = fract(texCoordsAdjusted);
+    texCoordsAdjusted = texCoordsAdjusted - fxy;
+    let xcubic = cubic(fxy.x);
+    let ycubic = cubic(fxy.y);
+    let c = texCoordsAdjusted.xxyy + vec2<f32>(-0.5, 1.5).xyxy;
+    let s = vec4<f32>(xcubic.xz + xcubic.yw, ycubic.xz + ycubic.yw);
+    var offset = c + vec4<f32>(xcubic.yw, ycubic.yw) / s;
+    offset = offset * invTexSize.xxyy;
+    let sample0 = textureSample(tex, tex_sampler, offset.xz);
+    let sample1 = textureSample(tex, tex_sampler, offset.yz);
+    let sample2 = textureSample(tex, tex_sampler, offset.xw);
+    let sample3 = textureSample(tex, tex_sampler, offset.yw);
+    let sx = s.x / (s.x + s.y);
+    let sy = s.z / (s.z + s.w);
+    return mix(mix(sample3, sample2, vec4<f32>(sx)), mix(sample1, sample0, vec4<f32>(sx)), vec4<f32>(sy));
+}
 
 @compute @workgroup_size(8, 8)
 fn composite_main(@builtin(global_invocation_id) id: vec3<u32>) {
@@ -120,71 +155,23 @@ fn composite_main(@builtin(global_invocation_id) id: vec3<u32>) {
     if (id.x >= dims.x || id.y >= dims.y) {
         return;
     }
+
+    // Calculate UV coordinates (normalized [0,1] space)
+    let uv = (vec2<f32>(id.xy) + 0.5) / vec2<f32>(dims.xy);
+    
+    // Sample scene texture
     var color = textureLoad(scene_tex, vec2<i32>(i32(id.x), i32(id.y)), 0).rgb;
 
-    // Bloom0 (mip level offset by 1)
-    var mip_x = id.x >> 1u;
-    var mip_y = id.y >> 1u;
-    var mip_dims = textureDimensions(bloom0);
-    if (mip_x < mip_dims.x && mip_y < mip_dims.y) {
-        color += textureLoad(bloom0, vec2<i32>(i32(mip_x), i32(mip_y)), 0).rgb * COMPOSITION_WEIGHTS[0];
-    }
+    // Sample bloom textures with bicubic filtering and add contributions
+    color += textureSampleBicubic(bloom0, bloom_sampler, uv).rgb * COMPOSITION_WEIGHTS[0];
+    color += textureSampleBicubic(bloom1, bloom_sampler, uv).rgb * COMPOSITION_WEIGHTS[1];
+    color += textureSampleBicubic(bloom2, bloom_sampler, uv).rgb * COMPOSITION_WEIGHTS[2];
+    color += textureSampleBicubic(bloom3, bloom_sampler, uv).rgb * COMPOSITION_WEIGHTS[3];
+    color += textureSampleBicubic(bloom4, bloom_sampler, uv).rgb * COMPOSITION_WEIGHTS[4];
+    color += textureSampleBicubic(bloom5, bloom_sampler, uv).rgb * COMPOSITION_WEIGHTS[5];
+    color += textureSampleBicubic(bloom6, bloom_sampler, uv).rgb * COMPOSITION_WEIGHTS[6];
+    color += textureSampleBicubic(bloom7, bloom_sampler, uv).rgb * COMPOSITION_WEIGHTS[7];
 
-    // Bloom1 (mip level offset by 2)
-    mip_x = id.x >> 2u;
-    mip_y = id.y >> 2u;
-    mip_dims = textureDimensions(bloom1);
-    if (mip_x < mip_dims.x && mip_y < mip_dims.y) {
-        color += textureLoad(bloom1, vec2<i32>(i32(mip_x), i32(mip_y)), 0).rgb * COMPOSITION_WEIGHTS[1];
-    }
-
-    // Bloom2 (mip level offset by 3)
-    mip_x = id.x >> 3u;
-    mip_y = id.y >> 3u;
-    mip_dims = textureDimensions(bloom2);
-    if (mip_x < mip_dims.x && mip_y < mip_dims.y) {
-        color += textureLoad(bloom2, vec2<i32>(i32(mip_x), i32(mip_y)), 0).rgb * COMPOSITION_WEIGHTS[2];
-    }
-
-    // Bloom3 (mip level offset by 4)
-    mip_x = id.x >> 4u;
-    mip_y = id.y >> 4u;
-    mip_dims = textureDimensions(bloom3);
-    if (mip_x < mip_dims.x && mip_y < mip_dims.y) {
-        color += textureLoad(bloom3, vec2<i32>(i32(mip_x), i32(mip_y)), 0).rgb * COMPOSITION_WEIGHTS[3];
-    }
-
-    // Bloom4 (mip level offset by 5)
-    mip_x = id.x >> 5u;
-    mip_y = id.y >> 5u;
-    mip_dims = textureDimensions(bloom4);
-    if (mip_x < mip_dims.x && mip_y < mip_dims.y) {
-        color += textureLoad(bloom4, vec2<i32>(i32(mip_x), i32(mip_y)), 0).rgb * COMPOSITION_WEIGHTS[4];
-    }
-
-    // Bloom5 (mip level offset by 6)
-    mip_x = id.x >> 6u;
-    mip_y = id.y >> 6u;
-    mip_dims = textureDimensions(bloom5);
-    if (mip_x < mip_dims.x && mip_y < mip_dims.y) {
-        color += textureLoad(bloom5, vec2<i32>(i32(mip_x), i32(mip_y)), 0).rgb * COMPOSITION_WEIGHTS[5];
-    }
-
-    // Bloom6 (mip level offset by 7)
-    mip_x = id.x >> 7u;
-    mip_y = id.y >> 7u;
-    mip_dims = textureDimensions(bloom6);
-    if (mip_x < mip_dims.x && mip_y < mip_dims.y) {
-        color += textureLoad(bloom6, vec2<i32>(i32(mip_x), i32(mip_y)), 0).rgb * COMPOSITION_WEIGHTS[6];
-    }
-
-    // Bloom7 (mip level offset by 8)
-    mip_x = id.x >> 8u;
-    mip_y = id.y >> 8u;
-    mip_dims = textureDimensions(bloom7);
-    if (mip_x < mip_dims.x && mip_y < mip_dims.y) {
-        color += textureLoad(bloom7, vec2<i32>(i32(mip_x), i32(mip_y)), 0).rgb * COMPOSITION_WEIGHTS[7];
-    }
-
+    // Write to output texture
     textureStore(output_tex, vec2<i32>(i32(id.x), i32(id.y)), vec4<f32>(color, 1.0));
 }
