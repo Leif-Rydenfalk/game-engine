@@ -33,7 +33,7 @@ fn calc_offset(octave: f32) -> vec2<f32> {
     var offset = vec2<f32>(0.0);
     offset.x = -min(1.0, floor(octave / 3.0)) * (0.25 + padding.x);
     offset.y = -(1.0 - (1.0 / exp2(octave))) - padding.y * octave;
-    offset.y += min(1.0, floor(octave / 3.0)) * 0.35;
+    // offset.y += min(1.0, floor(octave / 3.0)) * 0.35;
     return offset;
 }
 
@@ -65,7 +65,7 @@ fn tonemap(color: vec3<f32>) -> vec3<f32> {
 @fragment
 fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     var color = textureSample(t_scene, s, uv).rgb;
-    color += get_bloom(uv) * 0.05;
+    color = get_bloom(uv) * 0.5;
     color *= 200.0;
 
     color = pow(color, vec3<f32>(1.5));
