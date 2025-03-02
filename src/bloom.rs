@@ -343,99 +343,107 @@ impl BloomEffect {
         height: u32,
         render_texture_view: &wgpu::TextureView,
     ) {
-        self.bloom_mip_texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Bloom Mip Texture"),
-            size: wgpu::Extent3d {
-                width,
-                height,
+        // Clear existing vectors to drop old resources
+        self.bloom_downsample_textures.clear();
+        self.bloom_downsample_views.clear();
+        self.bloom_horizontal_textures.clear();
+        self.bloom_horizontal_views.clear();
+        self.bloom_vertical_textures.clear();
+        self.bloom_vertical_views.clear();
+        self.bloom_downsample_bind_groups.clear();
+        self.bloom_horizontal_bind_groups.clear();
+        self.bloom_vertical_bind_groups.clear();
+
+        // Recreate textures, views, and bind groups for each level
+        for i in 0..self.max_level {
+            let level_width = width >> i; // Downsample by 2^i
+            let level_height = height >> i;
+            let size = wgpu::Extent3d {
+                width: level_width.max(1), // Ensure at least 1x1
+                height: level_height.max(1),
                 depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba32Float,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        self.bloom_mip_texture_view = self
-            .bloom_mip_texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
+            };
 
-        self.bloom_horizontal_texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Bloom Horizontal Texture"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba32Float,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        self.bloom_horizontal_texture_view = self
-            .bloom_horizontal_texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
+            // Downsample texture and view
+            let downsample_tex = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(&format!("Bloom Downsample Texture Level {}", i)),
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba32Float,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let downsample_view =
+                downsample_tex.create_view(&wgpu::TextureViewDescriptor::default());
+            self.bloom_downsample_textures.push(downsample_tex);
+            self.bloom_downsample_views.push(downsample_view);
 
-        self.bloom_vertical_texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Bloom Vertical Texture"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba32Float,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        self.bloom_vertical_texture_view = self
-            .bloom_vertical_texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
+            // Horizontal blur texture and view
+            let horizontal_tex = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(&format!("Bloom Horizontal Texture Level {}", i)),
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba32Float,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let horizontal_view =
+                horizontal_tex.create_view(&wgpu::TextureViewDescriptor::default());
+            self.bloom_horizontal_textures.push(horizontal_tex);
+            self.bloom_horizontal_views.push(horizontal_view);
 
-        self.bloom_mip_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &self.texture_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(render_texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
-                },
-            ],
-            label: Some("bloom_mip_bind_group"),
-        });
+            // Vertical blur texture and view
+            let vertical_tex = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(&format!("Bloom Vertical Texture Level {}", i)),
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba32Float,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let vertical_view = vertical_tex.create_view(&wgpu::TextureViewDescriptor::default());
+            self.bloom_vertical_textures.push(vertical_tex);
+            self.bloom_vertical_views.push(vertical_view);
 
-        self.bloom_horizontal_bind_group =
-            self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            // Create bind groups
+            let input_view = if i == 0 {
+                render_texture_view // Level 0 uses the render texture
+            } else {
+                &self.bloom_downsample_views[(i - 1) as usize] // Downsample from previous level
+            };
+            let downsample_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 layout: &self.texture_bind_group_layout,
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&self.bloom_mip_texture_view),
+                        resource: wgpu::BindingResource::TextureView(input_view),
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
                         resource: wgpu::BindingResource::Sampler(&self.sampler),
                     },
                 ],
-                label: Some("bloom_horizontal_bind_group"),
+                label: Some(&format!("Bloom Downsample Bind Group Level {}", i)),
             });
+            self.bloom_downsample_bind_groups
+                .push(downsample_bind_group);
 
-        self.bloom_vertical_bind_group =
-            self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            let horizontal_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 layout: &self.texture_bind_group_layout,
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
                         resource: wgpu::BindingResource::TextureView(
-                            &self.bloom_horizontal_texture_view,
+                            &self.bloom_downsample_views[i as usize],
                         ),
                     },
                     wgpu::BindGroupEntry {
@@ -443,8 +451,29 @@ impl BloomEffect {
                         resource: wgpu::BindingResource::Sampler(&self.sampler),
                     },
                 ],
-                label: Some("bloom_vertical_bind_group"),
+                label: Some(&format!("Bloom Horizontal Bind Group Level {}", i)),
             });
+            self.bloom_horizontal_bind_groups
+                .push(horizontal_bind_group);
+
+            let vertical_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                layout: &self.texture_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(
+                            &self.bloom_horizontal_views[i as usize],
+                        ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                ],
+                label: Some(&format!("Bloom Vertical Bind Group Level {}", i)),
+            });
+            self.bloom_vertical_bind_groups.push(vertical_bind_group);
+        }
     }
 
     /// Renders the bloom effect passes.

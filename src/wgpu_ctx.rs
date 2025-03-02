@@ -299,6 +299,7 @@ impl<'window> WgpuCtx<'window> {
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Post Process Bind Group Layout"),
                 entries: &[
+                    // Scene texture at binding 0
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
                         visibility: wgpu::ShaderStages::FRAGMENT,
@@ -309,6 +310,7 @@ impl<'window> WgpuCtx<'window> {
                         },
                         count: None,
                     },
+                    // Bloom textures at bindings 1 to 5
                     wgpu::BindGroupLayoutEntry {
                         binding: 1,
                         visibility: wgpu::ShaderStages::FRAGMENT,
@@ -322,11 +324,60 @@ impl<'window> WgpuCtx<'window> {
                     wgpu::BindGroupLayoutEntry {
                         binding: 2,
                         visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 5,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
+                    // Sampler at binding 6
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 6,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                         count: None,
                     },
                 ],
             });
+
+        // Get the bloom texture views (slice of 5 views)
+        let bloom_views = bloom_effect.get_bloom_texture_views();
+        assert!(
+            bloom_views.len() >= 5,
+            "BloomEffect must provide at least 5 texture views"
+        );
+
         let post_process_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout: &post_process_bind_group_layout,
             entries: &[
@@ -336,23 +387,39 @@ impl<'window> WgpuCtx<'window> {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::TextureView(
-                        bloom_effect.get_bloom_texture_view(),
-                    ),
+                    resource: wgpu::BindingResource::TextureView(&bloom_views[0]),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&bloom_views[1]),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&bloom_views[2]),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(&bloom_views[3]),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::TextureView(&bloom_views[4]),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
                     resource: wgpu::BindingResource::Sampler(&sampler),
                 },
             ],
             label: Some("post_process_bind_group"),
         });
+
         let post_process_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Post Process Pipeline Layout"),
                 bind_group_layouts: &[&post_process_bind_group_layout],
                 push_constant_ranges: &[],
             });
+
         let post_process_pipeline =
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("Post Process Pipeline"),
@@ -488,6 +555,12 @@ impl<'window> WgpuCtx<'window> {
         );
 
         // Recreate post_process_bind_group
+        let bloom_views = self.bloom_effect.get_bloom_texture_views();
+        assert!(
+            bloom_views.len() >= 5,
+            "BloomEffect must provide at least 5 texture views"
+        );
+
         self.post_process_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout: &self.post_process_bind_group_layout,
             entries: &[
@@ -497,12 +570,26 @@ impl<'window> WgpuCtx<'window> {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::TextureView(
-                        self.bloom_effect.get_bloom_texture_view(),
-                    ),
+                    resource: wgpu::BindingResource::TextureView(&bloom_views[0]),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&bloom_views[1]),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&bloom_views[2]),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(&bloom_views[3]),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::TextureView(&bloom_views[4]),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
                     resource: wgpu::BindingResource::Sampler(&self.sampler),
                 },
             ],
