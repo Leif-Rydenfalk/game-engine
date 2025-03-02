@@ -250,7 +250,8 @@ fn get_bloom(uv: vec2<f32>) -> vec3<f32> {
 @fragment
 fn apply_fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     var color = textureSample(t_scene, s, uv).rgb;
-    color += get_bloom(uv) * 0.5; // Adjust bloom intensity
+    color = get_bloom(uv) * 0.05; // Adjust bloom intensity
+    color *= 200.0;
     return vec4<f32>(color, 1.0);
 }
 
