@@ -156,16 +156,16 @@ fn textureSampleHQ(tex: texture_2d<f32>, samp: sampler, texCoords: vec2<f32>) ->
     var col = vec4<f32>(0.0);
     
     // Sample at four points with positive weights (0.37487566 each)
-    col += 0.37487566 * textureSample(tex, samp, texCoords + vec2<f32>(-0.75777156, -0.75777156) * invTexSize)
-    col += 0.37487566 * textureSample(tex, samp, texCoords + vec2<f32>( 0.75777156, -0.75777156) * invTexSize);
-    col += 0.37487566 * textureSample(tex, samp, texCoords + vec2<f32>( 0.75777156,  0.75777156) * invTexSize);
-    col += 0.37487566 * textureSample(tex, samp, texCoords + vec2<f32>(-0.75777156,  0.75777156) * invTexSize);
+    col += 0.37487566 * textureSampleLevel(tex, samp, texCoords + vec2<f32>(-0.75777156, -0.75777156) * invTexSize, 0.0);
+    col += 0.37487566 * textureSampleLevel(tex, samp, texCoords + vec2<f32>( 0.75777156, -0.75777156) * invTexSize, 0.0);
+    col += 0.37487566 * textureSampleLevel(tex, samp, texCoords + vec2<f32>( 0.75777156,  0.75777156) * invTexSize, 0.0);
+    col += 0.37487566 * textureSampleLevel(tex, samp, texCoords + vec2<f32>(-0.75777156,  0.75777156) * invTexSize, 0.0);
     
     // Sample at four points with negative weights (-0.12487566 each)
-    col += -0.12487566 * textureSample(tex, samp, texCoords + vec2<f32>(-2.90709914,  0.0) * invTexSize);
-    col += -0.12487566 * textureSample(tex, samp, texCoords + vec2<f32>( 2.90709914,  0.0) * invTexSize);
-    col += -0.12487566 * textureSample(tex, samp, texCoords + vec2<f32>( 0.0, -2.90709914) * invTexSize);
-    col += -0.12487566 * textureSample(tex, samp, texCoords + vec2<f32>( 0.0,  2.90709914) * invTexSize);
+    col += -0.12487566 * textureSampleLevel(tex, samp, texCoords + vec2<f32>(-2.90709914,  0.0) * invTexSize, 0.0);
+    col += -0.12487566 * textureSampleLevel(tex, samp, texCoords + vec2<f32>( 2.90709914,  0.0) * invTexSize, 0.0);
+    col += -0.12487566 * textureSampleLevel(tex, samp, texCoords + vec2<f32>( 0.0, -2.90709914) * invTexSize, 0.0);
+    col += -0.12487566 * textureSampleLevel(tex, samp, texCoords + vec2<f32>( 0.0,  2.90709914) * invTexSize, 0.0);
     
     return col;
 }
