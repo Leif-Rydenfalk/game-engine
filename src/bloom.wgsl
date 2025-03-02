@@ -64,7 +64,7 @@ fn downsample_main(@builtin(global_invocation_id) id: vec3<u32>) {
 }
 
 // Blur Shaders (5-tap Gaussian)
-const BLUR_WEIGHTS: array<f32, 5> = array<f32, 5>(0.227027, 0.1945946, 0.1216216, 0.054054, 0.016216);
+const BLUR_WEIGHTS: array<f32, 5> = array<f32, 5>(0.19638062, 0.29675293, 0.09442139, 0.01037598, 0.00025940);
 
 @compute @workgroup_size(8, 8)
 fn horizontal_blur_main(@builtin(global_invocation_id) id: vec3<u32>) {
