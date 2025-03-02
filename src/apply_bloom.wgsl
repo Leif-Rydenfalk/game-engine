@@ -61,17 +61,17 @@ fn tonemap(color: vec3<f32>) -> vec3<f32> {
 @fragment
 fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     var color = textureSample(t_scene, s, uv).rgb;
-    //color += get_bloom(uv) * 0.4;
-    //color *= 200.0;
+    color += get_bloom(uv) * 0.4;
+    color *= 1.0;
 
-    //color = pow(color, vec3<f32>(1.5));
-    //color = color / (1.0 + color);
-    //color = pow(color, vec3<f32>(1.0 / 1.5));
+    color = pow(color, vec3<f32>(1.5));
+    color = color / (1.0 + color);
+    color = pow(color, vec3<f32>(1.0 / 1.5));
 
-    //color = mix(color, color * color * (3.0 - 2.0 * color), vec3<f32>(1.0));
-    //color = pow(color, vec3<f32>(1.3, 1.20, 1.0));  
+    color = mix(color, color * color * (3.0 - 2.0 * color), vec3<f32>(1.0));
+    color = pow(color, vec3<f32>(1.3, 1.20, 1.0));  
 
-    //color = pow(color, vec3<f32>(0.7 / 2.2));
+    color = pow(color, vec3<f32>(0.7 / 2.2));
 
     return vec4<f32>(color, 1.0);
 }
