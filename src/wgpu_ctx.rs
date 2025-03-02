@@ -382,17 +382,9 @@ impl<'window> WgpuCtx<'window> {
         });
 
         // --- Bloom Pipelines ---
-        let bloom_mip_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let bloom_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Bloom Mip Shader"),
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("bloom_mip.wgsl"))),
-        });
-        let bloom_horizontal_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Bloom Horizontal Shader"),
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("bloom_horizontal.wgsl"))),
-        });
-        let bloom_vertical_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Bloom Vertical Shader"),
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("bloom_vertical.wgsl"))),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("bloom.wgsl"))),
         });
 
         let bloom_mip_pipeline_layout =
@@ -566,10 +558,6 @@ impl<'window> WgpuCtx<'window> {
                 },
             ],
             label: Some("post_process_bind_group"),
-        });
-        let post_process_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Post Process Shader"),
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("apply_bloom.wgsl"))),
         });
         let post_process_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {

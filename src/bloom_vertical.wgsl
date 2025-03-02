@@ -46,3 +46,5 @@ fn vertical_fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     color /= weight_sum;
     return vec4(color, 1.0);
 }
+
+
