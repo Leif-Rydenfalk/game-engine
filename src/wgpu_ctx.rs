@@ -233,8 +233,11 @@ impl<'window> WgpuCtx<'window> {
                 bind_group_layouts: &[&bind_group_layout, &camera_bind_group_layout],
                 push_constant_ranges: &[],
             });
-        let render_pipeline =
-            create_pipeline(&device, surface_config.format, &render_pipeline_layout);
+        let render_pipeline = create_pipeline(
+            &device,
+            wgpu::TextureFormat::Rgba32Float,
+            &render_pipeline_layout,
+        );
 
         // --- Depth Texture ---
         let (depth_texture, depth_texture_view) =
