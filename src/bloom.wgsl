@@ -13,7 +13,6 @@ fn downsample_fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     return vec4<f32>(color, 1.0);
 }
 
-
 struct VerticalVertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) uv: vec2<f32>,
