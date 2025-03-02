@@ -410,14 +410,14 @@ impl<'window> WgpuCtx<'window> {
             label: Some("Bloom Mip Pipeline"),
             layout: Some(&bloom_mip_pipeline_layout),
             vertex: wgpu::VertexState {
-                module: &bloom_mip_shader,
-                entry_point: Some("vs_main"),
+                module: &bloom_shader,
+                entry_point: Some("mip_vs_main"),
                 buffers: &[],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
-                module: &bloom_mip_shader,
-                entry_point: Some("fs_main"),
+                module: &bloom_shader,
+                entry_point: Some("mip_fs_main"),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: wgpu::TextureFormat::Rgba32Float,
@@ -444,13 +444,13 @@ impl<'window> WgpuCtx<'window> {
                 label: Some("Bloom Horizontal Pipeline"),
                 layout: Some(&bloom_horizontal_pipeline_layout),
                 vertex: wgpu::VertexState {
-                    module: &bloom_horizontal_shader,
+                    module: &bloom_shader,
                     entry_point: Some("horizontal_vs_main"),
                     buffers: &[],
                     compilation_options: Default::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
-                    module: &bloom_horizontal_shader,
+                    module: &bloom_shader,
                     entry_point: Some("horizontal_fs_main"),
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
@@ -478,13 +478,13 @@ impl<'window> WgpuCtx<'window> {
                 label: Some("Bloom Vertical Pipeline"),
                 layout: Some(&bloom_vertical_pipeline_layout),
                 vertex: wgpu::VertexState {
-                    module: &bloom_vertical_shader,
+                    module: &bloom_shader,
                     entry_point: Some("vertical_vs_main"),
                     buffers: &[],
                     compilation_options: Default::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
-                    module: &bloom_vertical_shader,
+                    module: &bloom_shader,
                     entry_point: Some("vertical_fs_main"),
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
@@ -570,14 +570,14 @@ impl<'window> WgpuCtx<'window> {
                 label: Some("Post Process Pipeline"),
                 layout: Some(&post_process_pipeline_layout),
                 vertex: wgpu::VertexState {
-                    module: &post_process_shader,
-                    entry_point: Some("vs_main"),
+                    module: &bloom_shader,
+                    entry_point: Some("apply_vs_main"),
                     buffers: &[],
                     compilation_options: Default::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
-                    module: &post_process_shader,
-                    entry_point: Some("fs_main"),
+                    module: &bloom_shader,
+                    entry_point: Some("apply_fs_main"),
                     compilation_options: Default::default(),
                     targets: &[Some(surface_config.format.into())],
                 }),
