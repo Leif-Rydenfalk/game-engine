@@ -17,7 +17,6 @@ struct ColorCorrectionUniform {
     saturation: f32,
 }
 
-
 @group(0) @binding(0) var input_texture: texture_2d<f32>;
 @group(0) @binding(1) var input_sampler: sampler;
 @group(0) @binding(2) var<uniform> cc_uniform: ColorCorrectionUniform;
@@ -40,7 +39,7 @@ fn tonemap(color: vec3<f32>) -> vec3<f32> {
     c = mix(c, c * c * (3.0 - 2.0 * c), vec3<f32>(1.0));
     c = pow(c, vec3<f32>(1.3, 1.20, 1.0));
     c = pow(c, vec3<f32>(0.7 / 2.2));
-    // c = ACESFilm(c);
+    c = ACESFilm(c);
     
     return c;
 }
