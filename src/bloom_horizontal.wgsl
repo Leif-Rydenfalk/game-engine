@@ -38,7 +38,7 @@ fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     color += textureSample(t_input, s, uv).rgb * WEIGHTS[0];
     weight_sum += WEIGHTS[0];
     for (var i = 1u; i < 5u; i = i + 1u) {
-        let offset = vec2<f32>(OFFSETS[i] * texel_size.x * 0.5, 0.0);
+        let offset = vec2<f32>(OFFSETS[i] * texel_size.x, 0.0);
         color += textureSample(t_input, s, uv + offset).rgb * WEIGHTS[i];
         color += textureSample(t_input, s, uv - offset).rgb * WEIGHTS[i];
         weight_sum += WEIGHTS[i] * 2.0;
