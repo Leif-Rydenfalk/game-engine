@@ -147,29 +147,6 @@ fn textureSampleBicubic(tex: texture_2d<f32>, tex_sampler: sampler, texCoords: v
     return mix(mix(sample3, sample2, vec4<f32>(sx)), mix(sample1, sample0, vec4<f32>(sx)), vec4<f32>(sy));
 }
 
-fn textureSampleHQ(tex: texture_2d<f32>, samp: sampler, texCoords: vec2<f32>) -> vec4<f32> {
-    // Get texture dimensions and compute inverse texture size for scaling offsets
-    let texture_size = vec2<f32>(textureDimensions(tex));
-    let invTexSize = 1.0 / texture_size;
-    
-    // Initialize output color
-    var col = vec4<f32>(0.0);
-    
-    // Sample at four points with positive weights (0.37487566 each)
-    col += 0.37487566 * textureSampleLevel(tex, samp, texCoords + vec2<f32>(-0.75777156, -0.75777156) * invTexSize, 0.0);
-    col += 0.37487566 * textureSampleLevel(tex, samp, texCoords + vec2<f32>( 0.75777156, -0.75777156) * invTexSize, 0.0);
-    col += 0.37487566 * textureSampleLevel(tex, samp, texCoords + vec2<f32>( 0.75777156,  0.75777156) * invTexSize, 0.0);
-    col += 0.37487566 * textureSampleLevel(tex, samp, texCoords + vec2<f32>(-0.75777156,  0.75777156) * invTexSize, 0.0);
-    
-    // Sample at four points with negative weights (-0.12487566 each)
-    col += -0.12487566 * textureSampleLevel(tex, samp, texCoords + vec2<f32>(-2.90709914,  0.0) * invTexSize, 0.0);
-    col += -0.12487566 * textureSampleLevel(tex, samp, texCoords + vec2<f32>( 2.90709914,  0.0) * invTexSize, 0.0);
-    col += -0.12487566 * textureSampleLevel(tex, samp, texCoords + vec2<f32>( 0.0, -2.90709914) * invTexSize, 0.0);
-    col += -0.12487566 * textureSampleLevel(tex, samp, texCoords + vec2<f32>( 0.0,  2.90709914) * invTexSize, 0.0);
-    
-    return col;
-}
-
 @compute @workgroup_size(8, 8)
 fn composite_main(@builtin(global_invocation_id) id: vec3<u32>) {
     let dims = textureDimensions(output_tex);
