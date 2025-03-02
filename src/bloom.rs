@@ -1,4 +1,14 @@
 use std::sync::Arc;
+use wgpu::util::DeviceExt;
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct BloomSettings {
+    min_brightness: f32,
+    max_brightness: f32,
+    blur_radius: f32,
+    blur_type: u32, // 0 = Gaussian, 1 = Box, etc.
+}
 
 pub struct BloomEffect {
     device: Arc<wgpu::Device>,
@@ -6,23 +16,30 @@ pub struct BloomEffect {
     texture_bind_group_layout: Arc<wgpu::BindGroupLayout>,
     sampler: Arc<wgpu::Sampler>,
     max_level: u32,
-    bloom_downsample_textures: Vec<wgpu::Texture>,
-    bloom_downsample_views: Vec<wgpu::TextureView>,
-    bloom_horizontal_textures: Vec<wgpu::Texture>,
-    bloom_horizontal_views: Vec<wgpu::TextureView>,
-    bloom_vertical_textures: Vec<wgpu::Texture>,
-    bloom_vertical_views: Vec<wgpu::TextureView>,
-    bloom_downsample_bind_groups: Vec<wgpu::BindGroup>,
-    bloom_horizontal_bind_groups: Vec<wgpu::BindGroup>,
-    bloom_vertical_bind_groups: Vec<wgpu::BindGroup>,
-    bright_extract_pipeline: wgpu::RenderPipeline,
-    downsample_pipeline: wgpu::RenderPipeline,
-    bloom_horizontal_pipeline: wgpu::RenderPipeline,
-    bloom_vertical_pipeline: wgpu::RenderPipeline,
-    // New fields for post-processing
-    apply_bloom_bind_group_layout: wgpu::BindGroupLayout,
-    apply_bloom_pipeline: wgpu::RenderPipeline,
-    apply_bloom_bind_group: wgpu::BindGroup,
+    downsample_texture: wgpu::Texture,
+    downsample_views: Vec<wgpu::TextureView>,
+    horizontal_blur_texture: wgpu::Texture,
+    horizontal_blur_views: Vec<wgpu::TextureView>,
+    vertical_blur_texture: wgpu::Texture,
+    vertical_blur_views: Vec<wgpu::TextureView>,
+    settings_buffer: wgpu::Buffer,
+    downsample_bind_groups: Vec<wgpu::BindGroup>,
+    horizontal_blur_bind_groups: Vec<wgpu::BindGroup>,
+    vertical_blur_bind_groups: Vec<wgpu::BindGroup>,
+    prefilter_pipeline: wgpu::ComputePipeline,
+    downsample_pipeline: wgpu::ComputePipeline,
+    horizontal_blur_pipeline: wgpu::ComputePipeline,
+    vertical_blur_pipeline: wgpu::ComputePipeline,
+    composite_pipeline: wgpu::ComputePipeline,
+    composite_bind_group_layout: wgpu::BindGroupLayout,
+    full_width: u32,
+    full_height: u32,
+    half_width: u32,
+    half_height: u32,
+    group0_layout: wgpu::BindGroupLayout,
+    group1_layout: wgpu::BindGroupLayout,
+    group2_layout: wgpu::BindGroupLayout,
+    settings_bind_group: wgpu::BindGroup,
 }
 
 impl BloomEffect {
@@ -33,289 +50,126 @@ impl BloomEffect {
         sampler: Arc<wgpu::Sampler>,
         width: u32,
         height: u32,
-        render_texture_view: &wgpu::TextureView,
+        _render_texture_view: &wgpu::TextureView,
         bloom_shader: &wgpu::ShaderModule,
-        surface_format: wgpu::TextureFormat,
     ) -> Self {
-        let max_level = 5; // Levels: full, 1/2, 1/4, 1/8, 1/16
+        let max_level = 8;
+        let half_width = width / 2;
+        let half_height = height / 2;
 
-        let mut bloom_downsample_textures = Vec::new();
-        let mut bloom_downsample_views = Vec::new();
-        let mut bloom_horizontal_textures = Vec::new();
-        let mut bloom_horizontal_views = Vec::new();
-        let mut bloom_vertical_textures = Vec::new();
-        let mut bloom_vertical_views = Vec::new();
-        let mut bloom_downsample_bind_groups = Vec::new();
-        let mut bloom_horizontal_bind_groups = Vec::new();
-        let mut bloom_vertical_bind_groups = Vec::new();
+        let downsample_texture = create_mip_texture(
+            &device,
+            half_width,
+            half_height,
+            max_level,
+            "Downsample Texture",
+        );
+        let horizontal_blur_texture = create_mip_texture(
+            &device,
+            half_width,
+            half_height,
+            max_level,
+            "Horizontal Blur Texture",
+        );
+        let vertical_blur_texture = create_mip_texture(
+            &device,
+            half_width,
+            half_height,
+            max_level,
+            "Vertical Blur Texture",
+        );
 
-        // Create bloom textures and bind groups
-        for i in 0..max_level {
-            let level_width = width >> i;
-            let level_height = height >> i;
-            let size = wgpu::Extent3d {
-                width: level_width.max(1),
-                height: level_height.max(1),
-                depth_or_array_layers: 1,
-            };
+        let downsample_views = create_mip_views(&downsample_texture, max_level);
+        let horizontal_blur_views = create_mip_views(&horizontal_blur_texture, max_level);
+        let vertical_blur_views = create_mip_views(&vertical_blur_texture, max_level);
 
-            // Downsample texture
-            let downsample_tex = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some(&format!("Bloom Downsample Texture Level {}", i)),
-                size,
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba32Float,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            });
-            let downsample_view =
-                downsample_tex.create_view(&wgpu::TextureViewDescriptor::default());
-            bloom_downsample_textures.push(downsample_tex);
-            bloom_downsample_views.push(downsample_view);
-
-            // Horizontal blur texture
-            let horizontal_tex = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some(&format!("Bloom Horizontal Texture Level {}", i)),
-                size,
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba32Float,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            });
-            let horizontal_view =
-                horizontal_tex.create_view(&wgpu::TextureViewDescriptor::default());
-            bloom_horizontal_textures.push(horizontal_tex);
-            bloom_horizontal_views.push(horizontal_view);
-
-            // Vertical blur texture
-            let vertical_tex = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some(&format!("Bloom Vertical Texture Level {}", i)),
-                size,
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba32Float,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            });
-            let vertical_view = vertical_tex.create_view(&wgpu::TextureViewDescriptor::default());
-            bloom_vertical_textures.push(vertical_tex);
-            bloom_vertical_views.push(vertical_view);
-
-            // Bind groups
-            let input_view = if i == 0 {
-                render_texture_view
-            } else {
-                &bloom_downsample_views[(i - 1) as usize]
-            };
-            let downsample_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                layout: &texture_bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(input_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&sampler),
-                    },
-                ],
-                label: Some(&format!("Bloom Downsample Bind Group Level {}", i)),
-            });
-            bloom_downsample_bind_groups.push(downsample_bind_group);
-
-            let horizontal_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                layout: &texture_bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(
-                            &bloom_downsample_views[i as usize],
-                        ),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&sampler),
-                    },
-                ],
-                label: Some(&format!("Bloom Horizontal Bind Group Level {}", i)),
-            });
-            bloom_horizontal_bind_groups.push(horizontal_bind_group);
-
-            let vertical_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                layout: &texture_bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(
-                            &bloom_horizontal_views[i as usize],
-                        ),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&sampler),
-                    },
-                ],
-                label: Some(&format!("Bloom Vertical Bind Group Level {}", i)),
-            });
-            bloom_vertical_bind_groups.push(vertical_bind_group);
-        }
-
-        // Create pipelines for bloom passes
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Bloom Pipeline Layout"),
-            bind_group_layouts: &[&texture_bind_group_layout],
-            push_constant_ranges: &[],
+        let settings = BloomSettings {
+            min_brightness: 0.8,
+            max_brightness: 1.2,
+            blur_radius: 1.0,
+            blur_type: 0,
+        };
+        let settings_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Bloom Settings Buffer"),
+            contents: bytemuck::cast_slice(&[settings]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        let bright_extract_pipeline =
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("Bright Extract Pipeline"),
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: bloom_shader,
-                    entry_point: Some("mip_vs_main"),
-                    buffers: &[],
-                    compilation_options: Default::default(),
+        // Group 0: Uniform buffer
+        let group0_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Settings Bind Group Layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
                 },
-                fragment: Some(wgpu::FragmentState {
-                    module: bloom_shader,
-                    entry_point: Some("bright_extract_fs_main"),
-                    compilation_options: Default::default(),
-                    targets: &[Some(wgpu::TextureFormat::Rgba32Float.into())],
-                }),
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleStrip,
-                    strip_index_format: None,
-                    front_face: wgpu::FrontFace::Ccw,
-                    cull_mode: None,
-                    unclipped_depth: false,
-                    polygon_mode: wgpu::PolygonMode::Fill,
-                    conservative: false,
-                },
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                multiview: None,
-                cache: None,
-            });
-
-        let downsample_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Downsample Pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: bloom_shader,
-                entry_point: Some("mip_vs_main"),
-                buffers: &[],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: bloom_shader,
-                entry_point: Some("downsample_fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::TextureFormat::Rgba32Float.into())],
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleStrip,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: None,
+                count: None,
+            }],
         });
 
-        let bloom_horizontal_pipeline =
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("Bloom Horizontal Pipeline"),
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: bloom_shader,
-                    entry_point: Some("horizontal_vs_main"),
-                    buffers: &[],
-                    compilation_options: Default::default(),
+        // Group 1: Texture and storage texture
+        let group1_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Texture Bind Group Layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    },
+                    count: None,
                 },
-                fragment: Some(wgpu::FragmentState {
-                    module: bloom_shader,
-                    entry_point: Some("horizontal_fs_main"),
-                    compilation_options: Default::default(),
-                    targets: &[Some(wgpu::TextureFormat::Rgba32Float.into())],
-                }),
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleStrip,
-                    strip_index_format: None,
-                    front_face: wgpu::FrontFace::Ccw,
-                    cull_mode: None,
-                    unclipped_depth: false,
-                    polygon_mode: wgpu::PolygonMode::Fill,
-                    conservative: false,
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::WriteOnly,
+                        format: wgpu::TextureFormat::Rgba32Float,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                    count: None,
                 },
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                multiview: None,
-                cache: None,
-            });
+            ],
+        });
 
-        let bloom_vertical_pipeline =
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("Bloom Vertical Pipeline"),
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: bloom_shader,
-                    entry_point: Some("vertical_vs_main"),
-                    buffers: &[],
-                    compilation_options: Default::default(),
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: bloom_shader,
-                    entry_point: Some("vertical_fs_main"),
-                    compilation_options: Default::default(),
-                    targets: &[Some(wgpu::TextureFormat::Rgba32Float.into())],
-                }),
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleStrip,
-                    strip_index_format: None,
-                    front_face: wgpu::FrontFace::Ccw,
-                    cull_mode: None,
-                    unclipped_depth: false,
-                    polygon_mode: wgpu::PolygonMode::Fill,
-                    conservative: false,
-                },
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                multiview: None,
-                cache: None,
-            });
+        let group2_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Bloom Textures Bind Group Layout"),
+            entries: &(0..8)
+                .map(|i| wgpu::BindGroupLayoutEntry {
+                    binding: i,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    },
+                    count: None,
+                })
+                .collect::<Vec<_>>(),
+        });
 
-        // Create apply bloom (post-processing) resources
-        let apply_bloom_bind_group_layout =
+        let compute_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("Apply Bloom Bind Group Layout"),
+                label: Some("Compute Bind Group Layout"),
                 entries: &[
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
                         },
                         count: None,
                     },
                     wgpu::BindGroupLayoutEntry {
                         binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::Texture {
                             multisampled: false,
                             view_dimension: wgpu::TextureViewDimension::D2,
@@ -325,123 +179,205 @@ impl BloomEffect {
                     },
                     wgpu::BindGroupLayoutEntry {
                         binding: 2,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            multisampled: false,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::StorageTexture {
+                            access: wgpu::StorageTextureAccess::WriteOnly,
+                            format: wgpu::TextureFormat::Rgba32Float,
                             view_dimension: wgpu::TextureViewDimension::D2,
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
                         },
                         count: None,
+                    },
+                ],
+            });
+        let downsample_bind_groups = (1..max_level)
+            .map(|i| {
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    layout: &group1_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(
+                                &downsample_views[i as usize - 1],
+                            ),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::TextureView(
+                                &downsample_views[i as usize],
+                            ),
+                        },
+                    ],
+                    label: Some(&format!("Downsample Group 1 Bind Group Mip {}", i)),
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let horizontal_blur_bind_groups = (0..max_level)
+            .map(|i| {
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    layout: &group1_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(
+                                &downsample_views[i as usize],
+                            ),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::TextureView(
+                                &horizontal_blur_views[i as usize],
+                            ),
+                        },
+                    ],
+                    label: Some(&format!("Horizontal Blur Group 1 Bind Group Mip {}", i)),
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let vertical_blur_bind_groups = (0..max_level)
+            .map(|i| {
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    layout: &group1_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(
+                                &horizontal_blur_views[i as usize],
+                            ),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::TextureView(
+                                &vertical_blur_views[i as usize],
+                            ),
+                        },
+                    ],
+                    label: Some(&format!("Vertical Blur Group 1 Bind Group Mip {}", i)),
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let texture_binding = wgpu::BindGroupLayoutEntry {
+            binding: 0, // Will be overridden
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Texture {
+                multisampled: false,
+                view_dimension: wgpu::TextureViewDimension::D2,
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            },
+            count: None,
+        };
+
+        let composite_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Composite Bind Group Layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        ..texture_binding
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        ..texture_binding
                     },
                     wgpu::BindGroupLayoutEntry {
                         binding: 3,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        },
-                        count: None,
+                        ..texture_binding
                     },
                     wgpu::BindGroupLayoutEntry {
                         binding: 4,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        },
-                        count: None,
+                        ..texture_binding
                     },
                     wgpu::BindGroupLayoutEntry {
                         binding: 5,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        },
-                        count: None,
+                        ..texture_binding
                     },
                     wgpu::BindGroupLayoutEntry {
                         binding: 6,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        ..texture_binding
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 7,
+                        ..texture_binding
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 8,
+                        ..texture_binding
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 9,
+                        ..texture_binding
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 10,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::StorageTexture {
+                            access: wgpu::StorageTextureAccess::WriteOnly,
+                            format: wgpu::TextureFormat::Rgba32Float,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                        },
                         count: None,
                     },
                 ],
             });
 
-        let apply_bloom_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("Apply Bloom Pipeline Layout"),
-                bind_group_layouts: &[&apply_bloom_bind_group_layout],
-                push_constant_ranges: &[],
-            });
-        let apply_bloom_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Apply Bloom Pipeline"),
-            layout: Some(&apply_bloom_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: bloom_shader,
-                entry_point: Some("apply_vs_main"),
-                buffers: &[],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: bloom_shader,
-                entry_point: Some("apply_fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::TextureFormat::Rgba32Float.into())],
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleStrip,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: None,
+        let settings_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &group0_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: settings_buffer.as_entire_binding(),
+            }],
+            label: Some("Settings Bind Group"),
         });
 
-        let apply_bloom_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &apply_bloom_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(render_texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&bloom_vertical_views[0]),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&bloom_vertical_views[1]),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::TextureView(&bloom_vertical_views[2]),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: wgpu::BindingResource::TextureView(&bloom_vertical_views[3]),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: wgpu::BindingResource::TextureView(&bloom_vertical_views[4]),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 6,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
-                },
-            ],
-            label: Some("apply_bloom_bind_group"),
-        });
+        let prefilter_pipeline = create_compute_pipeline(
+            &device,
+            &[&group0_layout, &group1_layout],
+            bloom_shader,
+            "prefilter_main",
+            "Prefilter Pipeline",
+        );
+        let downsample_pipeline = create_compute_pipeline(
+            &device,
+            &[&group0_layout, &group1_layout],
+            bloom_shader,
+            "downsample_main",
+            "Downsample Pipeline",
+        );
+
+        let horizontal_blur_pipeline = create_compute_pipeline(
+            &device,
+            &[&group0_layout, &group1_layout],
+            bloom_shader,
+            "horizontal_blur_main",
+            "Horizontal Blur Pipeline",
+        );
+
+        let vertical_blur_pipeline = create_compute_pipeline(
+            &device,
+            &[&group0_layout, &group1_layout],
+            bloom_shader,
+            "vertical_blur_main",
+            "Vertical Blur Pipeline",
+        );
+        let composite_pipeline = create_compute_pipeline(
+            &device,
+            &[&group0_layout, &group1_layout, &group2_layout],
+            bloom_shader,
+            "composite_main",
+            "Composite Pipeline",
+        );
 
         Self {
             device,
@@ -449,297 +385,350 @@ impl BloomEffect {
             texture_bind_group_layout,
             sampler,
             max_level,
-            bloom_downsample_textures,
-            bloom_downsample_views,
-            bloom_horizontal_textures,
-            bloom_horizontal_views,
-            bloom_vertical_textures,
-            bloom_vertical_views,
-            bloom_downsample_bind_groups,
-            bloom_horizontal_bind_groups,
-            bloom_vertical_bind_groups,
-            bright_extract_pipeline,
+            downsample_texture,
+            downsample_views,
+            horizontal_blur_texture,
+            horizontal_blur_views,
+            vertical_blur_texture,
+            vertical_blur_views,
+            settings_buffer,
+            downsample_bind_groups,
+            horizontal_blur_bind_groups,
+            vertical_blur_bind_groups,
+            prefilter_pipeline,
             downsample_pipeline,
-            bloom_horizontal_pipeline,
-            bloom_vertical_pipeline,
-            apply_bloom_bind_group_layout,
-            apply_bloom_pipeline,
-            apply_bloom_bind_group,
+            horizontal_blur_pipeline,
+            vertical_blur_pipeline,
+            composite_pipeline,
+            composite_bind_group_layout,
+            full_width: width,
+            full_height: height,
+            half_width,
+            half_height,
+            group0_layout,
+            group1_layout,
+            group2_layout,
+            settings_bind_group,
         }
     }
+    pub fn resize(&mut self, width: u32, height: u32, _render_texture_view: &wgpu::TextureView) {
+        self.full_width = width;
+        self.full_height = height;
+        self.half_width = width / 2;
+        self.half_height = height / 2;
 
-    pub fn resize(&mut self, width: u32, height: u32, render_texture_view: &wgpu::TextureView) {
-        // Clear existing resources
-        self.bloom_downsample_textures.clear();
-        self.bloom_downsample_views.clear();
-        self.bloom_horizontal_textures.clear();
-        self.bloom_horizontal_views.clear();
-        self.bloom_vertical_textures.clear();
-        self.bloom_vertical_views.clear();
-        self.bloom_downsample_bind_groups.clear();
-        self.bloom_horizontal_bind_groups.clear();
-        self.bloom_vertical_bind_groups.clear();
+        self.downsample_texture = create_mip_texture(
+            &self.device,
+            self.half_width,
+            self.half_height,
+            self.max_level,
+            "Downsample Texture",
+        );
+        self.horizontal_blur_texture = create_mip_texture(
+            &self.device,
+            self.half_width,
+            self.half_height,
+            self.max_level,
+            "Horizontal Blur Texture",
+        );
+        self.vertical_blur_texture = create_mip_texture(
+            &self.device,
+            self.half_width,
+            self.half_height,
+            self.max_level,
+            "Vertical Blur Texture",
+        );
 
-        // Recreate bloom textures and bind groups
-        for i in 0..self.max_level {
-            let level_width = width >> i;
-            let level_height = height >> i;
-            let size = wgpu::Extent3d {
-                width: level_width.max(1),
-                height: level_height.max(1),
-                depth_or_array_layers: 1,
-            };
+        self.downsample_views = create_mip_views(&self.downsample_texture, self.max_level);
+        self.horizontal_blur_views =
+            create_mip_views(&self.horizontal_blur_texture, self.max_level);
+        self.vertical_blur_views = create_mip_views(&self.vertical_blur_texture, self.max_level);
 
-            let downsample_tex = self.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some(&format!("Bloom Downsample Texture Level {}", i)),
-                size,
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba32Float,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            });
-            let downsample_view =
-                downsample_tex.create_view(&wgpu::TextureViewDescriptor::default());
-            self.bloom_downsample_textures.push(downsample_tex);
-            self.bloom_downsample_views.push(downsample_view);
+        self.downsample_bind_groups = (1..self.max_level)
+            .map(|i| {
+                self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    layout: &self.group1_layout, // Corrected from texture_bind_group_layout
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(
+                                &self.downsample_views[i as usize - 1],
+                            ),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::TextureView(
+                                &self.downsample_views[i as usize],
+                            ),
+                        },
+                    ],
+                    label: Some(&format!("Downsample Texture Bind Group Mip {}", i)),
+                })
+            })
+            .collect();
 
-            let horizontal_tex = self.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some(&format!("Bloom Horizontal Texture Level {}", i)),
-                size,
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba32Float,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            });
-            let horizontal_view =
-                horizontal_tex.create_view(&wgpu::TextureViewDescriptor::default());
-            self.bloom_horizontal_textures.push(horizontal_tex);
-            self.bloom_horizontal_views.push(horizontal_view);
+        self.horizontal_blur_bind_groups = (0..self.max_level)
+            .map(|i| {
+                self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    layout: &self.group1_layout, // Corrected from texture_bind_group_layout
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(
+                                &self.downsample_views[i as usize],
+                            ),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::TextureView(
+                                &self.horizontal_blur_views[i as usize],
+                            ),
+                        },
+                    ],
+                    label: Some(&format!("Horizontal Blur Texture Bind Group Mip {}", i)),
+                })
+            })
+            .collect();
 
-            let vertical_tex = self.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some(&format!("Bloom Vertical Texture Level {}", i)),
-                size,
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba32Float,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            });
-            let vertical_view = vertical_tex.create_view(&wgpu::TextureViewDescriptor::default());
-            self.bloom_vertical_textures.push(vertical_tex);
-            self.bloom_vertical_views.push(vertical_view);
-
-            let input_view = if i == 0 {
-                render_texture_view
-            } else {
-                &self.bloom_downsample_views[(i - 1) as usize]
-            };
-            let downsample_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                layout: &self.texture_bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(input_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&self.sampler),
-                    },
-                ],
-                label: Some(&format!("Bloom Downsample Bind Group Level {}", i)),
-            });
-            self.bloom_downsample_bind_groups
-                .push(downsample_bind_group);
-
-            let horizontal_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                layout: &self.texture_bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(
-                            &self.bloom_downsample_views[i as usize],
-                        ),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&self.sampler),
-                    },
-                ],
-                label: Some(&format!("Bloom Horizontal Bind Group Level {}", i)),
-            });
-            self.bloom_horizontal_bind_groups
-                .push(horizontal_bind_group);
-
-            let vertical_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                layout: &self.texture_bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(
-                            &self.bloom_horizontal_views[i as usize],
-                        ),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&self.sampler),
-                    },
-                ],
-                label: Some(&format!("Bloom Vertical Bind Group Level {}", i)),
-            });
-            self.bloom_vertical_bind_groups.push(vertical_bind_group);
-        }
-
-        // Recreate apply_bloom_bind_group
-        self.apply_bloom_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &self.apply_bloom_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(render_texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&self.bloom_vertical_views[0]),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&self.bloom_vertical_views[1]),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::TextureView(&self.bloom_vertical_views[2]),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: wgpu::BindingResource::TextureView(&self.bloom_vertical_views[3]),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: wgpu::BindingResource::TextureView(&self.bloom_vertical_views[4]),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 6,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
-                },
-            ],
-            label: Some("apply_bloom_bind_group"),
-        });
+        self.vertical_blur_bind_groups = (0..self.max_level)
+            .map(|i| {
+                self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    layout: &self.group1_layout, // Corrected from texture_bind_group_layout
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(
+                                &self.horizontal_blur_views[i as usize],
+                            ),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::TextureView(
+                                &self.vertical_blur_views[i as usize],
+                            ),
+                        },
+                    ],
+                    label: Some(&format!("Vertical Blur Texture Bind Group Mip {}", i)),
+                })
+            })
+            .collect();
     }
 
-    pub fn render(&self, encoder: &mut wgpu::CommandEncoder) {
-        // Level 0: Extract bright parts
+    pub fn render(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        scene_texture_view: &wgpu::TextureView,
+    ) {
+        // Create the prefilter bind group
+        let prefilter_group1_bind_group =
+            self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                layout: &self.group1_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(scene_texture_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&self.downsample_views[0]),
+                    },
+                ],
+                label: Some("Prefilter Group 1 Bind Group"),
+            });
+
+        // Prefilter pass
         {
-            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Bright Extract Render Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.bloom_downsample_views[0],
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Prefilter Compute Pass"),
                 timestamp_writes: None,
-                occlusion_query_set: None,
             });
-            rpass.set_pipeline(&self.bright_extract_pipeline);
-            rpass.set_bind_group(0, &self.bloom_downsample_bind_groups[0], &[]);
-            rpass.draw(0..4, 0..1);
+            cpass.set_pipeline(&self.prefilter_pipeline);
+            cpass.set_bind_group(0, &self.settings_bind_group, &[]);
+            cpass.set_bind_group(1, &prefilter_group1_bind_group, &[]);
+            let dispatch_x = (self.half_width + 7) / 8;
+            let dispatch_y = (self.half_height + 7) / 8;
+            cpass.dispatch_workgroups(dispatch_x, dispatch_y, 1);
         }
 
-        // Downsample subsequent levels
+        // Downsample pass (corrected)
         for i in 1..self.max_level {
-            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some(&format!("Bloom Downsample Render Pass Level {}", i)),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.bloom_downsample_views[i as usize],
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some(&format!("Downsample Compute Pass Mip {}", i)),
                 timestamp_writes: None,
-                occlusion_query_set: None,
             });
-            rpass.set_pipeline(&self.downsample_pipeline);
-            rpass.set_bind_group(0, &self.bloom_downsample_bind_groups[i as usize], &[]);
-            rpass.draw(0..4, 0..1);
+            cpass.set_pipeline(&self.downsample_pipeline);
+            cpass.set_bind_group(0, &self.settings_bind_group, &[]);
+            cpass.set_bind_group(1, &self.downsample_bind_groups[i as usize - 1], &[]);
+            let mip_width = (self.half_width >> i).max(1);
+            let mip_height = (self.half_height >> i).max(1);
+            let dispatch_x = (mip_width + 7) / 8;
+            let dispatch_y = (mip_height + 7) / 8;
+            cpass.dispatch_workgroups(dispatch_x, dispatch_y, 1);
         }
 
-        // Apply blur to each level
+        // Blur passes
         for i in 0..self.max_level {
+            let mip_width = (self.half_width >> i).max(1);
+            let mip_height = (self.half_height >> i).max(1);
+            let dispatch_x = (mip_width + 7) / 8;
+            let dispatch_y = (mip_height + 7) / 8;
+
             // Horizontal blur
             {
-                let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some(&format!("Bloom Horizontal Render Pass Level {}", i)),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &self.bloom_horizontal_views[i as usize],
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
+                let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some(&format!("Horizontal Blur Compute Pass Mip {}", i)),
                     timestamp_writes: None,
-                    occlusion_query_set: None,
                 });
-                rpass.set_pipeline(&self.bloom_horizontal_pipeline);
-                rpass.set_bind_group(0, &self.bloom_horizontal_bind_groups[i as usize], &[]);
-                rpass.draw(0..4, 0..1);
+                cpass.set_pipeline(&self.horizontal_blur_pipeline);
+                cpass.set_bind_group(0, &self.settings_bind_group, &[]);
+                cpass.set_bind_group(1, &self.horizontal_blur_bind_groups[i as usize], &[]);
+                cpass.dispatch_workgroups(dispatch_x, dispatch_y, 1);
             }
 
             // Vertical blur
             {
-                let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some(&format!("Bloom Vertical Render Pass Level {}", i)),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &self.bloom_vertical_views[i as usize],
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
+                let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some(&format!("Vertical Blur Compute Pass Mip {}", i)),
                     timestamp_writes: None,
-                    occlusion_query_set: None,
                 });
-                rpass.set_pipeline(&self.bloom_vertical_pipeline);
-                rpass.set_bind_group(0, &self.bloom_vertical_bind_groups[i as usize], &[]);
-                rpass.draw(0..4, 0..1);
+                cpass.set_pipeline(&self.vertical_blur_pipeline);
+                cpass.set_bind_group(0, &self.settings_bind_group, &[]);
+                cpass.set_bind_group(1, &self.vertical_blur_bind_groups[i as usize], &[]);
+                cpass.dispatch_workgroups(dispatch_x, dispatch_y, 1);
             }
         }
     }
 
-    pub fn apply(&self, encoder: &mut wgpu::CommandEncoder, target_view: &wgpu::TextureView) {
-        let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("Apply Bloom Render Pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target_view,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
+    pub fn apply(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        target_view: &wgpu::TextureView,
+        scene_texture_view: &wgpu::TextureView,
+    ) {
+        let composite_group1_bind_group =
+            self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                layout: &self.group1_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(scene_texture_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(target_view),
+                    },
+                ],
+                label: Some("Composite Group 1 Bind Group"),
+            });
+
+        let composite_group2_bind_group =
+            self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                layout: &self.group2_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&self.vertical_blur_views[0]),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&self.vertical_blur_views[1]),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(&self.vertical_blur_views[2]),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(&self.vertical_blur_views[3]),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::TextureView(&self.vertical_blur_views[4]),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: wgpu::BindingResource::TextureView(&self.vertical_blur_views[5]),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: wgpu::BindingResource::TextureView(&self.vertical_blur_views[6]),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 7,
+                        resource: wgpu::BindingResource::TextureView(&self.vertical_blur_views[7]),
+                    },
+                ],
+                label: Some("Composite Group 2 Bind Group"),
+            });
+
+        let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("Composite Compute Pass"),
             timestamp_writes: None,
-            occlusion_query_set: None,
         });
-        rpass.set_pipeline(&self.apply_bloom_pipeline);
-        rpass.set_bind_group(0, &self.apply_bloom_bind_group, &[]);
-        rpass.draw(0..4, 0..1);
+        cpass.set_pipeline(&self.composite_pipeline);
+        cpass.set_bind_group(0, &self.settings_bind_group, &[]);
+        cpass.set_bind_group(1, &composite_group1_bind_group, &[]);
+        cpass.set_bind_group(2, &composite_group2_bind_group, &[]);
+        let dispatch_x = (self.full_width + 7) / 8;
+        let dispatch_y = (self.full_height + 7) / 8;
+        cpass.dispatch_workgroups(dispatch_x, dispatch_y, 1);
     }
+}
+
+fn create_mip_texture(
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+    mip_count: u32,
+    label: &str,
+) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: mip_count,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba32Float,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING,
+        view_formats: &[],
+    })
+}
+
+fn create_mip_views(texture: &wgpu::Texture, mip_count: u32) -> Vec<wgpu::TextureView> {
+    (0..mip_count)
+        .map(|level| {
+            texture.create_view(&wgpu::TextureViewDescriptor {
+                label: Some(&format!("Mip {}", level)),
+                base_mip_level: level,
+                mip_level_count: Some(1),
+                ..Default::default()
+            })
+        })
+        .collect()
+}
+
+fn create_compute_pipeline(
+    device: &wgpu::Device,
+    bind_group_layouts: &[&wgpu::BindGroupLayout],
+    shader: &wgpu::ShaderModule,
+    entry_point: &str,
+    label: &str,
+) -> wgpu::ComputePipeline {
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some(label),
+        bind_group_layouts,
+        push_constant_ranges: &[],
+    });
+    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some(label),
+        layout: Some(&layout),
+        module: shader,
+        entry_point: Some(entry_point),
+        compilation_options: Default::default(),
+        cache: None,
+    })
 }

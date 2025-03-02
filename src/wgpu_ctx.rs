@@ -294,7 +294,6 @@ impl<'window> WgpuCtx<'window> {
             surface_config.height,
             &render_texture_view,
             &bloom_shader,
-            surface_config.format,
         );
 
         // Create post-process texture
@@ -518,11 +517,15 @@ impl<'window> WgpuCtx<'window> {
         }
 
         // Render bloom passes
-        self.bloom_effect.render(&mut encoder);
+        self.bloom_effect
+            .render(&mut encoder, &self.render_texture_view);
 
         // Apply bloom to post-process texture
-        self.bloom_effect
-            .apply(&mut encoder, &self.post_process_texture_view);
+        self.bloom_effect.apply(
+            &mut encoder,
+            &self.post_process_texture_view,
+            &self.render_texture_view,
+        );
 
         self.color_correction_effect
             .update_uniform(ColorCorrectionUniform {
