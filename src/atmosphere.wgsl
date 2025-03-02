@@ -2,7 +2,7 @@
 const PI: f32 = 3.14159265359;
 const MAX: f32 = 10000.0;
 const R_INNER: f32 = 1.0;
-const R: f32 = R_INNER + 0.5;
+const R: f32 = R_INNER + 0.8;
 const NUM_OUT_SCATTER: i32 = 8;
 const NUM_IN_SCATTER: i32 = 80;
 

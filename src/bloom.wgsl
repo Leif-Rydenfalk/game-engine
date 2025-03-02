@@ -255,7 +255,7 @@ fn tonemap(color: vec3<f32>) -> vec3<f32> {
 @fragment
 fn apply_fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     var color = textureSample(t_scene, s, uv).rgb;
-    color += get_bloom(uv) * 0.05;
+    color += get_bloom(uv) * 0.02;
     color *= 200.0;
 
     color = pow(color, vec3<f32>(1.5));
