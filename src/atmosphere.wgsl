@@ -2,7 +2,7 @@
 const PI: f32 = 3.14159265359;
 const MAX: f32 = 10000.0;
 const R_INNER: f32 = 1.0;
-const R: f32 = R_INNER + 0.1;
+const R: f32 = R_INNER + 0.5;
 const NUM_OUT_SCATTER: i32 = 8;
 const NUM_IN_SCATTER: i32 = 80;
 
@@ -138,7 +138,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     let up = vec3f(camera.view[0][1], camera.view[1][1], camera.view[2][1]);
     
     // Scale for the billboard (adjust as needed)
-    let scale = 3.0;
+    let scale = 4.0;
     
     // Create a billboard position by transforming the input vertex positions
     // using the camera's right and up vectors
@@ -188,5 +188,5 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
     
     // Calculate atmospheric scattering
     let I = in_scatter(eye, dir, e, light_dir);
-    return vec4f(I * 0.01, 1.0);
+    return vec4f(I * 2.0, 1.0);
 }
