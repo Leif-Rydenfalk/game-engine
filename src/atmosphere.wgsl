@@ -188,5 +188,5 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
     
     // Calculate atmospheric scattering
     let I = in_scatter(eye, dir, e, light_dir);
-    return vec4f(I * 0.1, 1.0);
+    return vec4f(I * 10.0, 1.0);
 }
