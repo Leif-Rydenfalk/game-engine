@@ -23,24 +23,24 @@ fn vertical_vs_main(@builtin(vertex_index) vertex_index: u32) -> VerticalVertexO
     return output;
 }
 
-@group(0) @binding(0) var t_input: texture_2d<f32>;
-@group(0) @binding(1) var s: sampler;
+@group(0) @binding(0) var vertical_t_input: texture_2d<f32>;
+@group(0) @binding(1) var vertical_s: sampler;
 
 const WEIGHTS: array<f32, 5> = array<f32, 5>(0.19638062, 0.29675293, 0.09442139, 0.01037598, 0.00025940);
 const OFFSETS: array<f32, 5> = array<f32, 5>(0.0, 1.41176471, 3.29411765, 5.17647059, 7.05882353);
 
 @fragment
 fn vertical_fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
-    let dims = textureDimensions(t_input);
+    let dims = textureDimensions(vertical_t_input);
     let texel_size = vec2(1.0 / f32(dims.x), 1.0 / f32(dims.y));
     var color = vec3(0.0);
     var weight_sum = 0.0;
-    color += textureSample(t_input, s, uv).rgb * WEIGHTS[0];
+    color += textureSample(vertical_t_input, vertical_s, uv).rgb * WEIGHTS[0];
     weight_sum += WEIGHTS[0];
     for (var i = 1u; i < 5u; i = i + 1u) {
         let offset = vec2(0.0, OFFSETS[i] * texel_size.y * 0.5);
-        color += textureSample(t_input, s, uv + offset).rgb * WEIGHTS[i];
-        color += textureSample(t_input, s, uv - offset).rgb * WEIGHTS[i];
+        color += textureSample(vertical_t_input, vertical_s, uv + offset).rgb * WEIGHTS[i];
+        color += textureSample(vertical_t_input, vertical_s, uv - offset).rgb * WEIGHTS[i];
         weight_sum += WEIGHTS[i] * 2.0;
     }
     color /= weight_sum;
@@ -73,31 +73,26 @@ fn horizontal_vs_main(@builtin(vertex_index) vertex_index: u32) -> HorizontalVer
     return output;
 }
 
-@group(0) @binding(0) var t_input: texture_2d<f32>;
-@group(0) @binding(1) var s: sampler;
-
-const WEIGHTS: array<f32, 5> = array<f32, 5>(0.19638062, 0.29675293, 0.09442139, 0.01037598, 0.00025940);
-const OFFSETS: array<f32, 5> = array<f32, 5>(0.0, 1.41176471, 3.29411765, 5.17647059, 7.05882353);
+@group(0) @binding(0) var horizontal_t_input: texture_2d<f32>;
+@group(0) @binding(1) var horizontal_s: sampler;
 
 @fragment
 fn horizontal_fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
-    let dims = textureDimensions(t_input);
+    let dims = textureDimensions(horizontal_t_input);
     let texel_size = vec2(1.0 / f32(dims.x), 1.0 / f32(dims.y));
     var color = vec3(0.0);
     var weight_sum = 0.0;
-    color += textureSample(t_input, s, uv).rgb * WEIGHTS[0];
+    color += textureSample(horizontal_t_input, horizontal_s, uv).rgb * WEIGHTS[0];
     weight_sum += WEIGHTS[0];
     for (var i = 1u; i < 5u; i = i + 1u) {
         let offset = vec2(OFFSETS[i] * texel_size.x * 0.5, 0.0);
-        color += textureSample(t_input, s, uv + offset).rgb * WEIGHTS[i];
-        color += textureSample(t_input, s, uv - offset).rgb * WEIGHTS[i];
+        color += textureSample(horizontal_t_input, horizontal_s, uv + offset).rgb * WEIGHTS[i];
+        color += textureSample(horizontal_t_input, horizontal_s, uv - offset).rgb * WEIGHTS[i];
         weight_sum += WEIGHTS[i] * 2.0;
     }
     color /= weight_sum;
     return vec4(color, 1.0);
 }
-
-
 
 struct MipVertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -124,12 +119,12 @@ fn mip_vs_main(@builtin(vertex_index) vertex_index: u32) -> MipVertexOutput {
     return output;
 }
 
-@group(0) @binding(0) var t_input: texture_2d<f32>;
-@group(0) @binding(1) var s: sampler;
+@group(0) @binding(0) var mip_t_input: texture_2d<f32>;
+@group(0) @binding(1) var mip_s: sampler;
 
 // Calculate offset for each octave, matching the reference code
-fn calc_offset(octave: f32) -> vec2<f32> {
-    let dims = vec2<f32>(textureDimensions(t_input));
+fn mip_calc_offset(octave: f32) -> vec2<f32> {
+    let dims = vec2<f32>(textureDimensions(mip_t_input));
     let padding = vec2<f32>(10.0 / dims.x, 10.0 / dims.y);
     var offset = vec2<f32>(0.0);
     offset.x = -min(1.0, floor(octave / 3.0)) * (0.25 + padding.x);
@@ -163,7 +158,7 @@ fn grab(coord: vec2<f32>, octave: f32, offset: vec2<f32>) -> vec3<f32> {
 
     let oversampling = get_oversampling(octave);
     var color = vec3<f32>(0.0);
-    let dims = vec2<f32>(textureDimensions(t_input));
+    let dims = vec2<f32>(textureDimensions(mip_t_input));
     let step = 1.0 / f32(oversampling);
 
     // Sample multiple points around sample_coord
@@ -171,7 +166,7 @@ fn grab(coord: vec2<f32>, octave: f32, offset: vec2<f32>) -> vec3<f32> {
         for (var j = 0; j < oversampling; j = j + 1) {
             // Offset in normalized texture coordinates, scaled appropriately
             let off = vec2<f32>(f32(i) * step, f32(j) * step) / dims * scale;
-            color += textureSample(t_input, s, sample_coord + off).rgb;
+            color += textureSample(mip_t_input, mip_s, sample_coord + off).rgb;
         }
     }
     color /= f32(oversampling * oversampling); // Average the samples
@@ -183,13 +178,13 @@ fn mip_fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     var color = vec3<f32>(0.0);
     // Sum contributions from all octaves as in the reference code
     color += grab(uv, 1.0, vec2<f32>(0.0, 0.0));
-    color += grab(uv, 2.0, calc_offset(1.0));
-    color += grab(uv, 3.0, calc_offset(2.0));
-    color += grab(uv, 4.0, calc_offset(3.0));
-    color += grab(uv, 5.0, calc_offset(4.0));
-    color += grab(uv, 6.0, calc_offset(5.0));
-    color += grab(uv, 7.0, calc_offset(6.0));
-    color += grab(uv, 8.0, calc_offset(7.0));
+    color += grab(uv, 2.0, mip_calc_offset(1.0));
+    color += grab(uv, 3.0, mip_calc_offset(2.0));
+    color += grab(uv, 4.0, mip_calc_offset(3.0));
+    color += grab(uv, 5.0, mip_calc_offset(4.0));
+    color += grab(uv, 6.0, mip_calc_offset(5.0));
+    color += grab(uv, 7.0, mip_calc_offset(6.0));
+    color += grab(uv, 8.0, mip_calc_offset(7.0));
     return vec4<f32>(color, 1.0);
 }
 
