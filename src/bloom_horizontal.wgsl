@@ -4,7 +4,7 @@ struct VertexOutput {
 }
 
 @vertex
-fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
+fn horizontal_vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     let positions = array<vec2<f32>, 4>(
         vec2<f32>(-1.0, -1.0),
         vec2<f32>(1.0, -1.0),
@@ -30,7 +30,7 @@ const WEIGHTS: array<f32, 5> = array<f32, 5>(0.19638062, 0.29675293, 0.09442139,
 const OFFSETS: array<f32, 5> = array<f32, 5>(0.0, 1.41176471, 3.29411765, 5.17647059, 7.05882353);
 
 @fragment
-fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+fn horizontal_fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     let dims = textureDimensions(t_input);
     let texel_size = vec2(1.0 / f32(dims.x), 1.0 / f32(dims.y));
     var color = vec3(0.0);
