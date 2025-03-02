@@ -64,7 +64,7 @@ fn downsample_main(@builtin(global_invocation_id) id: vec3<u32>) {
 }
 
 // Blur Shaders (5-tap Gaussian)
-const BLUR_WEIGHTS: array<f32, 5> = array<f32, 5>(0.19638062, 0.29675293, 0.09442139, 0.01037598, 0.00025940);
+const BLUR_WEIGHTS: array<f32, 5> = array<f32, 5>(0.227027, 0.1945946, 0.1216216, 0.054054, 0.016216);
 
 @compute @workgroup_size(8, 8)
 fn horizontal_blur_main(@builtin(global_invocation_id) id: vec3<u32>) {
@@ -156,16 +156,16 @@ fn textureSampleHQ(tex: texture_2d<f32>, samp: sampler, texCoords: vec2<f32>) ->
     var col = vec4<f32>(0.0);
     
     // Sample at four points with positive weights (0.37487566 each)
-    col += 0.37487566 * textureSample(tex, samp, texCoords + vec2<f32>(-0.75777156, -0.75777156) * invTexSize);
-    col += 0.37487566 * textureSample(tex, samp, texCoords + vec2<f32>( 0.75777156, -0.75777156) * invTexSize);
-    col += 0.37487566 * textureSample(tex, samp, texCoords + vec2<f32>( 0.75777156,  0.75777156) * invTexSize);
-    col += 0.37487566 * textureSample(tex, samp, texCoords + vec2<f32>(-0.75777156,  0.75777156) * invTexSize);
+    col += 0.37487566 * textureSampleLevel(tex, samp, texCoords + vec2<f32>(-0.75777156, -0.75777156) * invTexSize, 0.0);
+    col += 0.37487566 * textureSampleLevel(tex, samp, texCoords + vec2<f32>( 0.75777156, -0.75777156) * invTexSize, 0.0);
+    col += 0.37487566 * textureSampleLevel(tex, samp, texCoords + vec2<f32>( 0.75777156,  0.75777156) * invTexSize, 0.0);
+    col += 0.37487566 * textureSampleLevel(tex, samp, texCoords + vec2<f32>(-0.75777156,  0.75777156) * invTexSize, 0.0);
     
     // Sample at four points with negative weights (-0.12487566 each)
-    col += -0.12487566 * textureSample(tex, samp, texCoords + vec2<f32>(-2.90709914,  0.0) * invTexSize);
-    col += -0.12487566 * textureSample(tex, samp, texCoords + vec2<f32>( 2.90709914,  0.0) * invTexSize);
-    col += -0.12487566 * textureSample(tex, samp, texCoords + vec2<f32>( 0.0, -2.90709914) * invTexSize);
-    col += -0.12487566 * textureSample(tex, samp, texCoords + vec2<f32>( 0.0,  2.90709914) * invTexSize);
+    col += -0.12487566 * textureSampleLevel(tex, samp, texCoords + vec2<f32>(-2.90709914,  0.0) * invTexSize, 0.0);
+    col += -0.12487566 * textureSampleLevel(tex, samp, texCoords + vec2<f32>( 2.90709914,  0.0) * invTexSize, 0.0);
+    col += -0.12487566 * textureSampleLevel(tex, samp, texCoords + vec2<f32>( 0.0, -2.90709914) * invTexSize, 0.0);
+    col += -0.12487566 * textureSampleLevel(tex, samp, texCoords + vec2<f32>( 0.0,  2.90709914) * invTexSize, 0.0);
     
     return col;
 }
@@ -180,7 +180,10 @@ fn composite_main(@builtin(global_invocation_id) id: vec3<u32>) {
     // Calculate UV coordinates (normalized [0,1] space)
     let uv = (vec2<f32>(id.xy) + 0.5) / vec2<f32>(dims.xy);
     
-    var bloom = vec3(0.0);
+    // Sample scene texture
+    var color = textureLoad(scene_tex, vec2<i32>(i32(id.x), i32(id.y)), 0).rgb;
+
+    var bloom = vec3<f32>(0.0);
 
     // Sample bloom textures with bicubic filtering and add contributions
     bloom += textureSampleHQ(bloom0, bloom_sampler, uv).rgb * 1.0;
@@ -192,8 +195,7 @@ fn composite_main(@builtin(global_invocation_id) id: vec3<u32>) {
     bloom += textureSampleHQ(bloom6, bloom_sampler, uv).rgb * 1.0;
     bloom += textureSampleHQ(bloom7, bloom_sampler, uv).rgb * 1.0;
 
-    // Sample scene texture
-    var color = textureLoad(scene_tex, vec2<i32>(i32(id.x), i32(id.y)), 0).rgb;
+    // Add bloom to scene color
     color += bloom * 0.05;
 
     // Write to output texture
