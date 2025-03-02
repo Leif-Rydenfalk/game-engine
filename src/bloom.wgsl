@@ -229,14 +229,14 @@ fn calc_offset(octave: f32) -> vec2<f32> {
 
 fn get_bloom(coord: vec2<f32>) -> vec3<f32> {
     var bloom = vec3<f32>(0.0);
-    bloom += textureSample(t_bloom, s, (coord / exp2(1.0)) - calc_offset(0.0)).rgb * 1.0;
-    bloom += textureSample(t_bloom, s, (coord / exp2(2.0)) - calc_offset(1.0)).rgb * 1.5;
-    bloom += textureSample(t_bloom, s, (coord / exp2(3.0)) - calc_offset(2.0)).rgb * 1.0;
-    bloom += textureSample(t_bloom, s, (coord / exp2(4.0)) - calc_offset(3.0)).rgb * 1.5;
+    // bloom += textureSample(t_bloom, s, (coord / exp2(1.0)) - calc_offset(0.0)).rgb * 1.0;
+    // bloom += textureSample(t_bloom, s, (coord / exp2(2.0)) - calc_offset(1.0)).rgb * 1.5;
+    // bloom += textureSample(t_bloom, s, (coord / exp2(3.0)) - calc_offset(2.0)).rgb * 1.0;
+    // bloom += textureSample(t_bloom, s, (coord / exp2(4.0)) - calc_offset(3.0)).rgb * 1.5;
     bloom += textureSample(t_bloom, s, (coord / exp2(5.0)) - calc_offset(4.0)).rgb * 1.8;
-    bloom += textureSample(t_bloom, s, (coord / exp2(6.0)) - calc_offset(5.0)).rgb * 1.0;
-    bloom += textureSample(t_bloom, s, (coord / exp2(7.0)) - calc_offset(6.0)).rgb * 1.0;
-    bloom += textureSample(t_bloom, s, (coord / exp2(8.0)) - calc_offset(7.0)).rgb * 1.0;
+    // bloom += textureSample(t_bloom, s, (coord / exp2(6.0)) - calc_offset(5.0)).rgb * 1.0;
+    // bloom += textureSample(t_bloom, s, (coord / exp2(7.0)) - calc_offset(6.0)).rgb * 1.0;
+    // bloom += textureSample(t_bloom, s, (coord / exp2(8.0)) - calc_offset(7.0)).rgb * 1.0;
     return bloom;
 }
 
@@ -255,7 +255,7 @@ fn tonemap(color: vec3<f32>) -> vec3<f32> {
 @fragment
 fn apply_fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     var color = textureSample(t_scene, s, uv).rgb;
-    color += get_bloom(uv) * 0.05;
+    color = get_bloom(uv) * 0.05;
     color *= 200.0;
 
     color = pow(color, vec3<f32>(1.5));

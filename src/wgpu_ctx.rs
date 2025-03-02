@@ -118,7 +118,7 @@ impl<'window> WgpuCtx<'window> {
         });
 
         // --- Main Texture and Sampler ---
-        let img = RgbaImg::new("./assets/images/example-img.png").unwrap();
+        let img = RgbaImg::new("./assets/textures/space.png").unwrap();
         let texture_size = wgpu::Extent3d {
             width: img.width,
             height: img.height,
