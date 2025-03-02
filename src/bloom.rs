@@ -378,7 +378,6 @@ impl BloomEffect {
                 bind_group_layouts: &[&apply_bloom_bind_group_layout],
                 push_constant_ranges: &[],
             });
-
         let apply_bloom_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Apply Bloom Pipeline"),
             layout: Some(&apply_bloom_pipeline_layout),
@@ -392,7 +391,7 @@ impl BloomEffect {
                 module: bloom_shader,
                 entry_point: Some("apply_fs_main"),
                 compilation_options: Default::default(),
-                targets: &[Some(surface_format.into())],
+                targets: &[Some(wgpu::TextureFormat::Rgba32Float.into())],
             }),
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleStrip,
@@ -724,15 +723,11 @@ impl BloomEffect {
         }
     }
 
-    pub fn apply(
-        &self,
-        encoder: &mut wgpu::CommandEncoder,
-        surface_texture_view: &wgpu::TextureView,
-    ) {
+    pub fn apply(&self, encoder: &mut wgpu::CommandEncoder, target_view: &wgpu::TextureView) {
         let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Apply Bloom Render Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: surface_texture_view,
+                view: target_view,
                 resolve_target: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),

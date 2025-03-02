@@ -1,5 +1,8 @@
 use crate::vertex::{create_vertex_buffer_layout, VERTEX_INDEX_LIST, VERTEX_SQUARE};
-use crate::{BloomEffect, Model, ModelInstance, RgbaImg, Transform};
+use crate::{
+    BloomEffect, ColorCorrectionEffect, ColorCorrectionUniform, Model, ModelInstance, RgbaImg,
+    Transform,
+};
 use cgmath::{Matrix4, SquareMatrix};
 use hecs::World;
 use std::borrow::Cow;
@@ -41,6 +44,9 @@ pub struct WgpuCtx<'window> {
     render_texture: wgpu::Texture,
     render_texture_view: wgpu::TextureView,
     bloom_effect: BloomEffect,
+    post_process_texture: wgpu::Texture,
+    post_process_texture_view: wgpu::TextureView,
+    color_correction_effect: ColorCorrectionEffect,
 }
 
 impl<'window> WgpuCtx<'window> {
@@ -279,7 +285,6 @@ impl<'window> WgpuCtx<'window> {
             source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("bloom.wgsl"))),
         });
 
-        // Bloom effect with surface format
         let bloom_effect = BloomEffect::new(
             Arc::clone(&device),
             Arc::clone(&queue),
@@ -289,6 +294,33 @@ impl<'window> WgpuCtx<'window> {
             surface_config.height,
             &render_texture_view,
             &bloom_shader,
+            surface_config.format,
+        );
+
+        // Create post-process texture
+        let post_process_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Post Process Texture"),
+            size: wgpu::Extent3d {
+                width: surface_config.width,
+                height: surface_config.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba32Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let post_process_texture_view =
+            post_process_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        // Create color correction effect
+        let color_correction_effect = ColorCorrectionEffect::new(
+            Arc::clone(&device),
+            Arc::clone(&queue),
+            &post_process_texture_view,
+            Arc::clone(&sampler),
             surface_config.format,
         );
 
@@ -315,6 +347,9 @@ impl<'window> WgpuCtx<'window> {
             render_texture,
             render_texture_view,
             bloom_effect,
+            post_process_texture,
+            post_process_texture_view,
+            color_correction_effect,
         }
     }
 
@@ -381,11 +416,31 @@ impl<'window> WgpuCtx<'window> {
             .render_texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
+        self.post_process_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Post Process Texture"),
+            size: wgpu::Extent3d {
+                width: self.surface_config.width,
+                height: self.surface_config.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba32Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        self.post_process_texture_view = self
+            .post_process_texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
         self.bloom_effect.resize(
             self.surface_config.width,
             self.surface_config.height,
             &self.render_texture_view,
         );
+        self.color_correction_effect
+            .resize(&self.post_process_texture_view);
     }
 
     pub fn draw(&mut self, world: &World) {
@@ -400,7 +455,7 @@ impl<'window> WgpuCtx<'window> {
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
-        // Render scene
+        // Render scene (unchanged)
         {
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Scene Render Pass"),
@@ -465,9 +520,22 @@ impl<'window> WgpuCtx<'window> {
         // Render bloom passes
         self.bloom_effect.render(&mut encoder);
 
-        // Apply bloom to surface
-        self.bloom_effect.apply(&mut encoder, &surface_texture_view);
+        // Apply bloom to post-process texture
+        self.bloom_effect
+            .apply(&mut encoder, &self.post_process_texture_view);
 
+        self.color_correction_effect
+            .update_uniform(ColorCorrectionUniform {
+                brightness: 1.2,
+                contrast: 1.1,
+                saturation: 1.3,
+            });
+
+        // Apply color correction to surface
+        self.color_correction_effect
+            .apply(&mut encoder, &surface_texture_view);
+
+        // Update main texture (unchanged)
         self.queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &self.texture,

@@ -32,6 +32,9 @@ pub use model::*;
 mod bloom;
 pub use bloom::*;
 
+mod color_correction;
+pub use color_correction::*;
+
 fn main() -> Result<(), EventLoopError> {
     let event_loop = EventLoop::new().unwrap();
     event_loop.set_control_flow(ControlFlow::Poll);
