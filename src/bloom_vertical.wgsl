@@ -31,18 +31,23 @@ const OFFSETS: array<f32, 5> = array<f32, 5>(0.0, 1.41176471, 3.29411765, 5.1764
 
 @fragment
 fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
-    let dims = textureDimensions(t_input);
-    let texel_size = vec2<f32>(1.0 / f32(dims.x), 1.0 / f32(dims.y));
-    var color = vec3<f32>(0.0);
-    var weight_sum = 0.0;
-    color += textureSample(t_input, s, uv).rgb * WEIGHTS[0];
-    weight_sum += WEIGHTS[0];
-    for (var i = 1u; i < 5u; i = i + 1u) {
-        let offset = vec2<f32>(0.0, OFFSETS[i] * texel_size.y);
-        color += textureSample(t_input, s, uv + offset).rgb * WEIGHTS[i];
-        color += textureSample(t_input, s, uv - offset).rgb * WEIGHTS[i];
-        weight_sum += WEIGHTS[i] * 2.0;
+    var color = vec3(0.0);
+    if (uv.y < 0.52) { // Adjust this threshold based on your mipmap layout
+        let dims = textureDimensions(t_input);
+        let texel_size = vec2(1.0 / f32(dims.y), 1.0 / f32(dims.y));
+        var weight_sum = 0.0;
+        color += textureSample(t_input, s, uv).rgb * WEIGHTS[0];
+        weight_sum += WEIGHTS[0];
+        for (var i = 1u; i < 5u; i = i + 1u) {
+            let offset = vec2(OFFSETS[i] * texel_size.y, 0.0); // Horizontal
+            // or vec2(0.0, OFFSETS[i] * texel_size.y) for vertical
+            color += textureSample(t_input, s, uv + offset).rgb * WEIGHTS[i];
+            color += textureSample(t_input, s, uv - offset).rgb * WEIGHTS[i];
+            weight_sum += WEIGHTS[i] * 2.0;
+        }
+        color /= weight_sum;
+    } else {
+        color = textureSample(t_input, s, uv).rgb;
     }
-    color /= weight_sum;
-    return vec4<f32>(color, 1.0);
+    return vec4(color, 1.0);
 }
