@@ -214,8 +214,40 @@ fn apply_vs_main(@builtin(vertex_index) vertex_index: u32) -> ApplyVertexOutput 
 }
 
 @group(0) @binding(0) var t_scene: texture_2d<f32>;
-@group(0) @binding(1) var t_bloom: texture_2d<f32>;
-@group(0) @binding(2) var s: sampler;
+@group(0) @binding(1) var t_bloom0: texture_2d<f32>;
+@group(0) @binding(2) var t_bloom1: texture_2d<f32>;
+@group(0) @binding(3) var t_bloom2: texture_2d<f32>;
+@group(0) @binding(4) var t_bloom3: texture_2d<f32>;
+@group(0) @binding(5) var t_bloom4: texture_2d<f32>;
+@group(0) @binding(6) var s: sampler;
+
+fn get_bloom(uv: vec2<f32>) -> vec3<f32> {
+    var bloom = vec3<f32>(0.0);
+    // Sample each level with weights (adjust as needed)
+    bloom += textureSample(t_bloom0, s, uv).rgb * 1.0;  // Full size
+    bloom += textureSample(t_bloom1, s, uv).rgb * 1.5;  // 1/2
+    bloom += textureSample(t_bloom2, s, uv).rgb * 1.0;  // 1/4
+    bloom += textureSample(t_bloom3, s, uv).rgb * 1.5;  // 1/8
+    bloom += textureSample(t_bloom4, s, uv).rgb * 1.8;  // 1/16
+    return bloom;
+}
+
+@fragment
+fn apply_fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+    var color = textureSample(t_scene, s, uv).rgb;
+    color += get_bloom(uv) * 0.05; // Adjust bloom intensity
+    color *= 200.0;
+
+    // Existing tonemapping
+    color = pow(color, vec3<f32>(1.5));
+    color = color / (1.0 + color);
+    color = pow(color, vec3<f32>(1.0 / 1.5));
+    color = mix(color, color * color * (3.0 - 2.0 * color), vec3<f32>(1.0));
+    color = pow(color, vec3<f32>(1.3, 1.20, 1.0));
+    color = pow(color, vec3<f32>(0.7 / 2.2));
+
+    return vec4<f32>(color, 1.0);
+}
 
 fn calc_offset(octave: f32) -> vec2<f32> {
     let dims = vec2<f32>(textureDimensions(t_scene));
@@ -225,19 +257,6 @@ fn calc_offset(octave: f32) -> vec2<f32> {
     offset.y = -(1.0 - (1.0 / exp2(octave))) - padding.y * octave;
     offset.y += min(1.0, floor(octave / 3.0)) * 0.35;
     return offset;
-}
-
-fn get_bloom(coord: vec2<f32>) -> vec3<f32> {
-    var bloom = vec3<f32>(0.0);
-    bloom += textureSample(t_bloom, s, (coord / exp2(1.0)) - calc_offset(0.0)).rgb * 1.0;
-    bloom += textureSample(t_bloom, s, (coord / exp2(2.0)) - calc_offset(1.0)).rgb * 1.5;
-    bloom += textureSample(t_bloom, s, (coord / exp2(3.0)) - calc_offset(2.0)).rgb * 1.0;
-    bloom += textureSample(t_bloom, s, (coord / exp2(4.0)) - calc_offset(3.0)).rgb * 1.5;
-    bloom += textureSample(t_bloom, s, (coord / exp2(5.0)) - calc_offset(4.0)).rgb * 1.8;
-    bloom += textureSample(t_bloom, s, (coord / exp2(6.0)) - calc_offset(5.0)).rgb * 1.0;
-    bloom += textureSample(t_bloom, s, (coord / exp2(7.0)) - calc_offset(6.0)).rgb * 1.0;
-    bloom += textureSample(t_bloom, s, (coord / exp2(8.0)) - calc_offset(7.0)).rgb * 1.0;
-    return bloom;
 }
 
 fn tonemap(color: vec3<f32>) -> vec3<f32> {
@@ -252,20 +271,23 @@ fn tonemap(color: vec3<f32>) -> vec3<f32> {
     return c;
 }
 
+// Bright extraction shader
 @fragment
-fn apply_fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
-    var color = textureSample(t_scene, s, uv).rgb;
-    color = get_bloom(uv) * 0.05;
-    color *= 200.0;
+fn bright_extract_fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+    let color = textureSample(mip_t_input, mip_s, uv).rgb;
+    // Simple threshold for bright parts
+    let brightness = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
+    if (brightness > 1.0) {
+        return vec4<f32>(color, 1.0);
+    } else {
+        return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    }
+}
 
-    color = pow(color, vec3<f32>(1.5));
-    color = color / (1.0 + color);
-    color = pow(color, vec3<f32>(1.0 / 1.5));
-
-    color = mix(color, color * color * (3.0 - 2.0 * color), vec3<f32>(1.0));
-    color = pow(color, vec3<f32>(1.3, 1.20, 1.0));  
-
-    color = pow(color, vec3<f32>(0.7 / 2.2));
-
+// Downsample shader
+@fragment
+fn downsample_fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+    // Simple bilinear downsample by sampling at uv
+    let color = textureSample(mip_t_input, mip_s, uv).rgb;
     return vec4<f32>(color, 1.0);
 }
