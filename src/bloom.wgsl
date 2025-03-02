@@ -140,10 +140,10 @@ fn textureSampleBicubic(tex: texture_2d<f32>, tex_sampler: sampler, texCoords: v
     let s = vec4<f32>(xcubic.xz + xcubic.yw, ycubic.xz + ycubic.yw);
     var offset = c + vec4<f32>(xcubic.yw, ycubic.yw) / s;
     offset = offset * invTexSize.xxyy;
-    let sample0 = textureSample(tex, tex_sampler, offset.xz);
-    let sample1 = textureSample(tex, tex_sampler, offset.yz);
-    let sample2 = textureSample(tex, tex_sampler, offset.xw);
-    let sample3 = textureSample(tex, tex_sampler, offset.yw);
+    let sample0 = textureSampleLevel(tex, tex_sampler, offset.xz, 0.0);
+    let sample1 = textureSampleLevel(tex, tex_sampler, offset.yz, 0.0);
+    let sample2 = textureSampleLevel(tex, tex_sampler, offset.xw, 0.0);
+    let sample3 = textureSampleLevel(tex, tex_sampler, offset.yw, 0.0);
     let sx = s.x / (s.x + s.y);
     let sy = s.z / (s.z + s.w);
     return mix(mix(sample3, sample2, vec4<f32>(sx)), mix(sample1, sample0, vec4<f32>(sx)), vec4<f32>(sy));
