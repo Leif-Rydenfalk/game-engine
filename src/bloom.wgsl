@@ -149,6 +149,29 @@ fn textureSampleBicubic(tex: texture_2d<f32>, tex_sampler: sampler, texCoords: v
     return mix(mix(sample3, sample2, vec4<f32>(sx)), mix(sample1, sample0, vec4<f32>(sx)), vec4<f32>(sy));
 }
 
+fn textureSampleHQ(tex: texture_2d<f32>, samp: sampler, texCoords: vec2<f32>) -> vec4<f32> {
+    // Get texture dimensions and compute inverse texture size for scaling offsets
+    let texture_size = vec2<f32>(textureDimensions(tex));
+    let invTexSize = 1.0 / texture_size;
+    
+    // Initialize output color
+    var col = vec4<f32>(0.0);
+    
+    // Sample at four points with positive weights (0.37487566 each)
+    col += 0.37487566 * textureSample(tex, samp, texCoords + vec2<f32>(-0.75777156, -0.75777156) * invTexSize);
+    col += 0.37487566 * textureSample(tex, samp, texCoords + vec2<f32>( 0.75777156, -0.75777156) * invTexSize);
+    col += 0.37487566 * textureSample(tex, samp, texCoords + vec2<f32>( 0.75777156,  0.75777156) * invTexSize);
+    col += 0.37487566 * textureSample(tex, samp, texCoords + vec2<f32>(-0.75777156,  0.75777156) * invTexSize);
+    
+    // Sample at four points with negative weights (-0.12487566 each)
+    col += -0.12487566 * textureSample(tex, samp, texCoords + vec2<f32>(-2.90709914,  0.0) * invTexSize);
+    col += -0.12487566 * textureSample(tex, samp, texCoords + vec2<f32>( 2.90709914,  0.0) * invTexSize);
+    col += -0.12487566 * textureSample(tex, samp, texCoords + vec2<f32>( 0.0, -2.90709914) * invTexSize);
+    col += -0.12487566 * textureSample(tex, samp, texCoords + vec2<f32>( 0.0,  2.90709914) * invTexSize);
+    
+    return col;
+}
+
 @compute @workgroup_size(8, 8)
 fn composite_main(@builtin(global_invocation_id) id: vec3<u32>) {
     let dims = textureDimensions(output_tex);
@@ -163,14 +186,14 @@ fn composite_main(@builtin(global_invocation_id) id: vec3<u32>) {
     var color = textureLoad(scene_tex, vec2<i32>(i32(id.x), i32(id.y)), 0).rgb;
 
     // Sample bloom textures with bicubic filtering and add contributions
-    color += textureSampleBicubic(bloom0, bloom_sampler, uv).rgb * COMPOSITION_WEIGHTS[0];
-    color += textureSampleBicubic(bloom1, bloom_sampler, uv).rgb * COMPOSITION_WEIGHTS[1];
-    color += textureSampleBicubic(bloom2, bloom_sampler, uv).rgb * COMPOSITION_WEIGHTS[2];
-    color += textureSampleBicubic(bloom3, bloom_sampler, uv).rgb * COMPOSITION_WEIGHTS[3];
-    color += textureSampleBicubic(bloom4, bloom_sampler, uv).rgb * COMPOSITION_WEIGHTS[4];
-    color += textureSampleBicubic(bloom5, bloom_sampler, uv).rgb * COMPOSITION_WEIGHTS[5];
-    color += textureSampleBicubic(bloom6, bloom_sampler, uv).rgb * COMPOSITION_WEIGHTS[6];
-    color += textureSampleBicubic(bloom7, bloom_sampler, uv).rgb * COMPOSITION_WEIGHTS[7];
+    color += textureSampleHQ(bloom0, bloom_sampler, uv).rgb * COMPOSITION_WEIGHTS[0];
+    color += textureSampleHQ(bloom1, bloom_sampler, uv).rgb * COMPOSITION_WEIGHTS[1];
+    color += textureSampleHQ(bloom2, bloom_sampler, uv).rgb * COMPOSITION_WEIGHTS[2];
+    color += textureSampleHQ(bloom3, bloom_sampler, uv).rgb * COMPOSITION_WEIGHTS[3];
+    color += textureSampleHQ(bloom4, bloom_sampler, uv).rgb * COMPOSITION_WEIGHTS[4];
+    color += textureSampleHQ(bloom5, bloom_sampler, uv).rgb * COMPOSITION_WEIGHTS[5];
+    color += textureSampleHQ(bloom6, bloom_sampler, uv).rgb * COMPOSITION_WEIGHTS[6];
+    color += textureSampleHQ(bloom7, bloom_sampler, uv).rgb * COMPOSITION_WEIGHTS[7];
 
     // Write to output texture
     textureStore(output_tex, vec2<i32>(i32(id.x), i32(id.y)), vec4<f32>(color, 1.0));
