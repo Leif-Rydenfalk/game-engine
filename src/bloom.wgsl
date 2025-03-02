@@ -1,3 +1,18 @@
+// Downsample shader
+@fragment
+fn downsample_fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+    let dims = vec2<f32>(textureDimensions(mip_t_input));
+    let texel_size = vec2<f32>(1.0 / dims.x, 1.0 / dims.y);
+    var color = vec3<f32>(0.0);
+    color += textureSample(mip_t_input, mip_s, uv + vec2<f32>(-0.5, -0.5) * texel_size).rgb;
+    color += textureSample(mip_t_input, mip_s, uv + vec2<f32>( 0.5, -0.5) * texel_size).rgb;
+    color += textureSample(mip_t_input, mip_s, uv + vec2<f32>(-0.5,  0.5) * texel_size).rgb;
+    color += textureSample(mip_t_input, mip_s, uv + vec2<f32>( 0.5,  0.5) * texel_size).rgb;
+    color *= 0.25; // Average
+    return vec4<f32>(color, 1.0);
+}
+
+
 struct VerticalVertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) uv: vec2<f32>,
@@ -38,7 +53,7 @@ fn vertical_fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     color += textureSample(vertical_t_input, vertical_s, uv).rgb * WEIGHTS[0];
     weight_sum += WEIGHTS[0];
     for (var i = 1u; i < 5u; i = i + 1u) {
-        let offset = vec2(0.0, OFFSETS[i] * texel_size.y * 0.5);
+        let offset = vec2(0.0, OFFSETS[i] * texel_size.y);
         color += textureSample(vertical_t_input, vertical_s, uv + offset).rgb * WEIGHTS[i];
         color += textureSample(vertical_t_input, vertical_s, uv - offset).rgb * WEIGHTS[i];
         weight_sum += WEIGHTS[i] * 2.0;
@@ -85,7 +100,7 @@ fn horizontal_fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     color += textureSample(horizontal_t_input, horizontal_s, uv).rgb * WEIGHTS[0];
     weight_sum += WEIGHTS[0];
     for (var i = 1u; i < 5u; i = i + 1u) {
-        let offset = vec2(OFFSETS[i] * texel_size.x * 0.5, 0.0);
+        let offset = vec2(OFFSETS[i] * texel_size.x, 0.0);
         color += textureSample(horizontal_t_input, horizontal_s, uv + offset).rgb * WEIGHTS[i];
         color += textureSample(horizontal_t_input, horizontal_s, uv - offset).rgb * WEIGHTS[i];
         weight_sum += WEIGHTS[i] * 2.0;
@@ -260,12 +275,4 @@ fn bright_extract_fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> 
     } else {
         return vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
-}
-
-// Downsample shader
-@fragment
-fn downsample_fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
-    // Simple bilinear downsample by sampling at uv
-    let color = textureSample(mip_t_input, mip_s, uv).rgb;
-    return vec4<f32>(color, 1.0);
 }
