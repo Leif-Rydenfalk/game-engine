@@ -275,7 +275,7 @@ impl<'window> WgpuCtx<'window> {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: surface_config.format,
+            format: wgpu::TextureFormat::Rgba32Float,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
@@ -708,7 +708,7 @@ impl<'window> WgpuCtx<'window> {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: self.surface_config.format,
+            format: wgpu::TextureFormat::Rgba32Float,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
