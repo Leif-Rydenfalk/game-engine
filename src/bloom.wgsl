@@ -186,14 +186,14 @@ fn composite_main(@builtin(global_invocation_id) id: vec3<u32>) {
     var bloom = vec3<f32>(0.0);
 
     // Sample bloom textures with bicubic filtering and add contributions
-    bloom += textureSampleHQ(bloom0, bloom_sampler, uv).rgb * 1.0;
-    bloom += textureSampleHQ(bloom1, bloom_sampler, uv).rgb * 1.5;
-    bloom += textureSampleHQ(bloom2, bloom_sampler, uv).rgb * 1.0;
-    bloom += textureSampleHQ(bloom3, bloom_sampler, uv).rgb * 1.5;
-    bloom += textureSampleHQ(bloom4, bloom_sampler, uv).rgb * 1.8;
-    bloom += textureSampleHQ(bloom5, bloom_sampler, uv).rgb * 1.0;
-    bloom += textureSampleHQ(bloom6, bloom_sampler, uv).rgb * 1.0;
-    bloom += textureSampleHQ(bloom7, bloom_sampler, uv).rgb * 1.0;
+    bloom += textureSampleBicubic(bloom0, bloom_sampler, uv).rgb * 1.0;
+    bloom += textureSampleBicubic(bloom1, bloom_sampler, uv).rgb * 1.5;
+    bloom += textureSampleBicubic(bloom2, bloom_sampler, uv).rgb * 1.0;
+    bloom += textureSampleBicubic(bloom3, bloom_sampler, uv).rgb * 1.5;
+    bloom += textureSampleBicubic(bloom4, bloom_sampler, uv).rgb * 1.8;
+    bloom += textureSampleBicubic(bloom5, bloom_sampler, uv).rgb * 1.0;
+    bloom += textureSampleBicubic(bloom6, bloom_sampler, uv).rgb * 1.0;
+    bloom += textureSampleBicubic(bloom7, bloom_sampler, uv).rgb * 1.0;
 
     // Add bloom to scene color
     color += bloom * 0.05;
