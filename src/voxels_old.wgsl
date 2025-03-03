@@ -1,7 +1,7 @@
 // voxel.wgsl
 
 // Constants
-const MAX_HEIGHT: f32 = 5.0;
+const MAX_HEIGHT: f32 = 2.0;
 const MAX_WATER_HEIGHT: f32 = -2.2;
 const WATER_HEIGHT: f32 = MAX_WATER_HEIGHT;
 const TUNNEL_RADIUS: f32 = 1.1;
@@ -19,10 +19,9 @@ const lcol: vec3f = vec3f(1.0, 0.9, 0.75) * 2.0;
 // const ldir: vec3f = normalize(vec3f(0.85, 1.2, 0.8));
 const ldir: vec3f = vec3f(0.507746, 0.716817, 0.477878);
 
-// Debug flags
-const SHOW_NORMALS: bool = false;
-const SHOW_STEPS: bool = false;
-const VISUALIZE_DISTANCE_FIELD: bool = false;
+// Optional debug flags (uncomment to enable)
+// const SHOW_NORMALS: bool = true;
+// const SHOW_STEPS: bool = true;
 
 // Bindings
 @group(0) @binding(0) var<uniform> camera: CameraUniform;
@@ -319,17 +318,10 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 // Fragment Shader
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4f {
-    // let ro = getCameraPos(camera.time); // Animate like in the reference Shadertoy
-    let ro = camera.camera_position; // Use camera uniform
+    let ro = getCameraPos(camera.time); // Align with Shadertoy
     let ndc = vec4f(input.tex_uv * 2.0 - 1.0, 1.0, 1.0);
     let world_pos = camera.inv_view_proj * ndc;
     let rd = normalize(world_pos.xyz / world_pos.w - ro);
-
-    if (VISUALIZE_DISTANCE_FIELD) {
-        let pos = ro + rd * 10.0; // Sample at fixed distance
-        let d = map(pos);
-        return vec4f(vec3f(d * 0.1 + 0.5), 1.0); // Visualize distance values
-    }
 
     let hit = trace(ro, rd, MAX_DIST);
     var col = vec3f(0.0);
@@ -401,8 +393,15 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
         }
     }
 
-    if (SHOW_NORMALS && hit.is_hit) { col = hit.n * 0.5 + 0.5; }
-    if (SHOW_STEPS) { col = vec3f(f32(hit.i) / f32(STEPS)); }
+    col += 0.12 * lcol * pow(max(dot(rd, ldir), 0.0), 6.0);
+    
+    // // Debug options
+    // /*
+    // if (SHOW_NORMALS && hit.is_hit) { col = hit.n * 0.5 + 0.5; }
+    // if (SHOW_STEPS) { col = vec3f(f32(hit.i) / f32(STEPS)); }
+    // */
 
-    return vec4f(linearTosRGB(col), 1.0);
+    col = ACESFilm(max(col, vec3f(0.0)) * 0.35);
+    let grain = (hash13(vec3f(input.tex_uv, camera.time)) - 0.5) / 255.0;
+    return vec4f(linearTosRGB(col), 1.0) + vec4f(grain);
 }

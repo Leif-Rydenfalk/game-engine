@@ -30,8 +30,12 @@ pub const VERTICES_SQUARE: &[Vertex] = &[
     },
 ];
 
+// pub const INDICES_SQUARE: &[u16] = &[
+//     0, 1, 2, 1, 3, 2, // Front
+// ];
+
 pub const INDICES_SQUARE: &[u16] = &[
-    0, 1, 2, 1, 3, 2, // Front
+    0, 1, 2, 0, 2, 3, // Front
 ];
 
 pub const VERTICES_CUBE: &[Vertex] = &[
