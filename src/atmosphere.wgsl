@@ -16,6 +16,7 @@ var<uniform> camera: CameraUniform;
 
 struct CameraUniform {
     view_proj: mat4x4<f32>,
+    inv_view_proj: mat4x4<f32>,
     view: mat4x4<f32>,
     camera_position: vec3f,
     _padding: f32,
@@ -128,6 +129,7 @@ fn in_scatter(o: vec3f, dir: vec3f, e: vec2f, l: vec3f) -> vec3f {
     return scatter;
 }
 
+
 @vertex
 fn vs_main(input: VertexInput) -> VertexOutput {
     var output: VertexOutput;
@@ -162,6 +164,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     
     return output;
 }
+
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4f {

@@ -6,7 +6,7 @@ pub struct Vertex {
     pub normal: [f32; 3],
 }
 
-pub const VERTEX_SQUARE: &[Vertex] = &[
+pub const VERTICES_SQUARE: &[Vertex] = &[
     // Front face
     Vertex {
         position: [-0.5, -0.5, 0.0],
@@ -30,7 +30,11 @@ pub const VERTEX_SQUARE: &[Vertex] = &[
     },
 ];
 
-pub const VERTEX_CUBE: &[Vertex] = &[
+pub const INDICES_SQUARE: &[u16] = &[
+    0, 1, 2, 1, 3, 2, // Front
+];
+
+pub const VERTICES_CUBE: &[Vertex] = &[
     // Front face
     Vertex {
         position: [-0.5, -0.5, 0.5],
@@ -159,7 +163,7 @@ pub const VERTEX_CUBE: &[Vertex] = &[
     },
 ];
 
-pub const VERTEX_INDEX_LIST: &[u16] = &[
+pub const INDICIES_SQUARE: &[u16] = &[
     0, 1, 2, 2, 3, 0, // Front
     4, 5, 6, 6, 7, 4, // Back
     8, 9, 10, 10, 11, 8, // Left

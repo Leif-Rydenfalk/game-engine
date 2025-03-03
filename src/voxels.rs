@@ -8,7 +8,6 @@ use hecs::World;
 use std::borrow::Cow;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Instant;
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 use wgpu::{MemoryHints, SamplerDescriptor, ShaderSource};
 use winit::window::Window;
@@ -20,7 +19,7 @@ struct CameraUniform {
     inv_view_proj: [[f32; 4]; 4],
     view: [[f32; 4]; 4],
     position: [f32; 3],
-    time: f32,
+    _padding: f32,
 }
 
 pub struct WgpuCtx<'window> {
@@ -54,7 +53,6 @@ pub struct WgpuCtx<'window> {
     dirt_texture: wgpu::Texture,
     terrain_bind_group_layout: wgpu::BindGroupLayout,
     terrain_bind_group: wgpu::BindGroup,
-    time: Instant,
 }
 
 impl<'window> WgpuCtx<'window> {
@@ -560,7 +558,6 @@ impl<'window> WgpuCtx<'window> {
             dirt_texture,
             terrain_bind_group_layout,
             terrain_bind_group,
-            time: Instant::now()
         }
     }
 
@@ -588,7 +585,7 @@ impl<'window> WgpuCtx<'window> {
             inv_view_proj: inv_view_proj.into(),
             view: view.into(),
             position,
-            time: self.time.elapsed().as_secs_f32(),
+            _padding: Default::default(),
         };
         self.queue.write_buffer(
             &self.camera_buffer,
@@ -744,7 +741,7 @@ fn create_pipeline(
 ) -> wgpu::RenderPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: None,
-        source: ShaderSource::Wgsl(Cow::Borrowed(include_str!("voxels.wgsl"))),
+        source: ShaderSource::Wgsl(Cow::Borrowed(include_str!("voxels_debug.wgsl"))),
     });
 
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
