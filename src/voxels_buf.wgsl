@@ -1,0 +1,1 @@
+  if (pt > 0.0 && pt < t || ro.y < WATER_HEIGHT) {

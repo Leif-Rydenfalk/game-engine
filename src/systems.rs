@@ -11,7 +11,6 @@ pub fn update_camera_system(world: &mut World, input: &Input, dt: Duration) {
 
         controller.move_speed_mult +=
             (controller.move_speed_mult * input.scroll_delta() as f32 * dt * 5.0) as f32;
-        println!("{}", controller.move_speed_mult);
 
         // Handle rotation
         if input.is_mouse_button_down(winit::event::MouseButton::Left) {
