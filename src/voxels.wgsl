@@ -11,7 +11,7 @@ const VOXEL_LEVEL: i32 = 5; // Updated to match Shadertoy
 const VOXEL_SIZE: f32 = exp2(-f32(VOXEL_LEVEL)); // ≈ 0.03125
 const STEPS: i32 = 512;
 const MAX_DIST: f32 = 600.0;
-const MIN_DIST: f32 = 1.0;
+const MIN_DIST: f32 = 0.2;
 const EPS: f32 = 1e-4;
 const PI: f32 = 3.14159265359;
 const TAU: f32 = 6.28318530718;
@@ -258,7 +258,22 @@ fn shade(pos: vec3f, ldir: vec3f, lod: f32, hit: HitInfo) -> vec3f {
     return col;
 }
 fn shade2(pos: vec3f, ldir: vec3f, lod: f32, hit: HitInfo) -> vec3f {
-    return shade(pos, ldir, lod, hit);
+    let vpos = hit.id;
+    let g = grad(vpos);
+    let gn = g / length(g);
+    let n = hit.n;
+    let dif = max(dot(n, ldir), 0.0);
+    
+    var col = getAlbedo(vpos, gn, lod);
+    let ao = smoothstep(-0.08, 0.04, map(pos) / length(grad(pos)));
+    let hao = smoothstep(WATER_HEIGHT - 12.0, WATER_HEIGHT, pos.y);
+    
+    col *= dot(abs(n), vec3f(0.8, 1.0, 0.9));
+    col *= (dif * 0.6 + 0.4) * lcol;
+    col *= ao * 0.6 + 0.4;
+    col *= hao * 0.6 + 0.4;
+    
+    return col;
 }
 fn getSky(rd: vec3f) -> vec3f {
     let skyCol = vec3f(0.353, 0.611, 1.0);
@@ -303,106 +318,134 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     return output;
 }
 // Fragment Shader
+// Fragment Shader
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4f {
     let ro = camera.camera_position;
     let ndc = vec4f(input.tex_uv * 2.0 - 1.0, 1.0, 1.0);
     let world_pos = camera.inv_view_proj * ndc;
     let rd = normalize(world_pos.xyz / world_pos.w - ro);
+    
     if VISUALIZE_DISTANCE_FIELD {
         let pos = ro + rd * 10.0;
         let d = map(pos);
         return vec4f(vec3f(d * 0.1 + 0.5), 1.0);
     }
+    
     let hit = trace(ro, rd, MAX_DIST);
     var col = vec3f(0.0);
-    var t = MAX_DIST;
+    var t = hit.t;
+    
     if hit.is_hit {
         let pos = ro + rd * hit.t;
         let lod = clamp(log2(distance(ro, hit.id)) - 2.0, 0.0, 6.0);
         col = shade(pos, ldir, lod, hit);
-        t = hit.t;
+        
         let a = 0.012;
         let b = 0.08;
         let fog = (a / b) * exp(-(ro.y - WATER_HEIGHT) * b) *
                   (1.0 - exp(-t * rd.y * b)) / max(rd.y, EPS);
         let biome = getBiome(hit.id);
-        // Fog colors to match Shadertoy
         let fogCol = mix(vec3f(0.5, 0.8, 1.0), vec3f(1.0, 0.85, 0.6), biome.x);
         col = mix(col, fogCol, clamp(fog, 0.0, 1.0));
     } else {
         col = getSky(rd);
+        t = MAX_DIST;
     }
+    
+    // Improved water rendering
     let pt = -(ro.y - WATER_HEIGHT) / rd.y;
-    if pt > 0.0 && (pt < t || ro.y < WATER_HEIGHT) {
-        let wpos = ro + rd * pt;
+    if (pt > 0.0 && pt < t || ro.y < WATER_HEIGHT) {
         if !hit.is_hit {
-            let biome = getBiome(wpos);
+            let biome = getBiome(ro + rd * pt);
             col = mix(vec3f(0.5, 0.8, 1.0), vec3f(1.0, 0.85, 0.6), biome.x);
         }
-        let biome = getBiome(wpos);
-        var wcol = vec3f(0.5, 1.0, 1.0);
-        wcol = mix(wcol, vec3f(0.5, 1.0, 0.9), biome.x);
-        wcol = mix(wcol, vec3f(0.2, 0.8, 1.0), biome.y);
-        let wabs = vec3f(0.15, 0.8, 1.0);
-        // Fixed: Added missing * operators
+        
+        // Water colors - adjusted for deeper appearance
+        let biome = getBiome(ro + rd * pt);
+        var wcol = vec3f(0.3, 0.8, 1.0);
+        wcol = mix(wcol, vec3f(0.4, 0.9, 0.8), biome.x);
+        wcol = mix(wcol, vec3f(0.1, 0.7, 0.9), biome.y);
+        
+        // Darker water absorption
+        let wabs = vec3f(0.1, 0.7, 0.9);
+        
+        // Handle underwater case
+        var adjusted_pt = pt;
+        if (ro.y < WATER_HEIGHT && pt < 0.0) {
+            adjusted_pt = MAX_DIST;
+        }
+        
+        let wpos = ro + rd * adjusted_pt;
+        
+        // Water normal calculation
+        let e = 0.001;
+        let wnstr = 1500.0;
         let wo = vec2f(1.0, 0.8) * camera.time * 0.01;
         let wuv = wpos.xz * 0.08 + wo;
-        let e = 0.001;
         let wh = textureSample(grain_texture, terrain_sampler, wuv).r;
         let whdx = textureSample(grain_texture, terrain_sampler, wuv + vec2f(e, 0.0)).r;
         let whdy = textureSample(grain_texture, terrain_sampler, wuv + vec2f(0.0, e)).r;
-        let wn = normalize(vec3f(wh - whdx, e * 1500.0, wh - whdy));
+        let wn = normalize(vec3f(wh - whdx, e * wnstr, wh - whdy));
         let wref = reflect(rd, wn);
+        
+        // Reflection color
         var rcol = vec3f(0.0);
-        if ro.y > WATER_HEIGHT {
+        if (ro.y > WATER_HEIGHT) {
             let hitR = trace(wpos + vec3f(0.0, 0.01, 0.0), wref, 15.0);
-            let lod = clamp(log2(distance(wpos, hitR.id)) - 2.0, 0.0, 6.0);
-            if hitR.is_hit {
-                rcol = shade2(wpos + wref * hitR.t, ldir, lod, hitR);
+            let lod = clamp(log2(distance(ro, hitR.id)) - 2.0, 0.0, 6.0);
+            
+            if (hitR.is_hit) {
+                rcol = shade2(wpos, ldir, lod, hitR);
             } else {
                 rcol = getSky(wref);
             }
         }
+        
+        // Specular highlight
         let spec = pow(max(dot(wref, ldir), 0.0), 50.0);
-        // Updated Fresnel calculation to match Shadertoy
-        let fre = 0.35 + 0.65 * pow(max(dot(rd, wn), 0.0), 5.0);
-        let fre_adj = select(fre, 0.0, rd.y < 0.0 && ro.y < WATER_HEIGHT);
+        
+        // Fresnel reflection factor
+        let r0 = 0.35;
+        var fre = r0 + (1.0 - r0) * pow(max(dot(rd, wn), 0.0), 5.0);
+        
+        if (rd.y < 0.0 && ro.y < WATER_HEIGHT) {
+            fre = 0.0;
+        }
+        
+        // Water absorption - increased for deeper appearance
         let abt = select(t - pt, min(t, pt), ro.y < WATER_HEIGHT);
-        // Fixed: Added missing * operators
-        col *= exp(-abt * (1.0 - wabs) * 0.08);
-        if pt < t {
-            col = mix(col, wcol * (rcol + vec3f(spec)), fre_adj);
-            // Fixed: Added missing * operators for foam effect
+        col *= exp(-abt * (1.0 - wabs) * 0.1);
+        
+        if (pt < t) {
+            col = mix(col, wcol * (rcol + spec), fre);
+            
+            // Foam effect
             let wp = wpos + wn * vec3f(1.0, 0.0, 1.0) * 0.2;
             let wd = map(wp) / length(grad(wp));
-            let foam = smoothstep(0.22, 0.0, wd +
-                          sin((wd - camera.time * 0.03) * 60.0) * 0.03 +
-                          (wh - 0.5) * 0.12);
-            col = mix(col, col + vec3f(1.0), foam * 0.4);
+            let foam = sin((wd - camera.time * 0.03) * 60.0);
+            let foam_mask = smoothstep(0.22, 0.0, wd + foam * 0.03 + (wh - 0.5) * 0.12);
+            col = mix(col, col + vec3f(1.0), foam_mask * 0.4);
         }
     }
-    // --- Begin Color Correction (matching Shadertoy) ---
-    // First, add a boost based on the light dot
-    let cost: f32 = max(dot(rd, ldir), 0.0);
-    // Fixed: Added missing * operators
-    col = col + 0.12 * lcol * pow(cost, 6.0);
     
-    // Optionally override with debug visualizations:
+    // Color correction (matching ShaderToy)
+    let cost = max(dot(rd, ldir), 0.0);
+    col += 0.12 * lcol * pow(cost, 6.0);
+    
     if SHOW_NORMALS {
-        col = hit.n;  // Use the raw normal as in Shadertoy
+        col = hit.n;
     }
+    
     if SHOW_STEPS {
         col = vec3f(f32(hit.i) / f32(STEPS));
     }
     
-    // Clamp to nonnegative values and apply ACES filmic tone mapping (matching Shadertoy)
     col = max(col, vec3f(0.0));
     col = ACESFilm(col * 0.35);
     
-    // Add film grain like in Shadertoy
+    // Add film grain
     let grain = (dot(hash23(vec3f(input.tex_uv * 1000.0, camera.time)), vec2f(1.0)) - 0.5) / 255.0;
     
-    // --- End Color Correction ---
     return vec4f(linearTosRGB(col) + grain, 1.0);
 }
