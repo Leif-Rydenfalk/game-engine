@@ -279,11 +279,11 @@ fn getSky(rd: vec3f) -> vec3f {
     let skyCol = vec3f(0.353, 0.611, 1.0);
     let skyCol2 = vec3f(0.8, 0.9, 1.0);
     var col = mix(skyCol2, skyCol, smoothstep(0.0, 0.2, rd.y)) * 1.2;
-    // Fixed: Corrected sun angle calculation
+    
+    // Sun with exact parameters from Shadertoy
     let sunCost = cos(0.52 * PI / 180.0);
     let cost = max(dot(rd, ldir), 0.0);
     let dist = cost - sunCost;
-    // Fixed: Added missing * operators
     let bloom = max(1.0 / (0.02 - min(dist, 0.0) * 500.0), 0.0) * 0.02;
     col += 10.0 * lcol * (smoothstep(0.0, 0.0001, dist) + bloom);
     return col;
