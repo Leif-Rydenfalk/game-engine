@@ -8,6 +8,7 @@ use hecs::World;
 use std::borrow::Cow;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Instant;
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 use wgpu::{MemoryHints, SamplerDescriptor, ShaderSource};
 use winit::window::Window;
@@ -19,7 +20,7 @@ struct CameraUniform {
     inv_view_proj: [[f32; 4]; 4],
     view: [[f32; 4]; 4],
     position: [f32; 3],
-    _padding: f32,
+    time: f32,
 }
 
 pub struct WgpuCtx<'window> {
@@ -48,6 +49,7 @@ pub struct WgpuCtx<'window> {
     post_process_texture: wgpu::Texture,
     post_process_texture_view: wgpu::TextureView,
     color_correction_effect: ColorCorrectionEffect,
+    time: Instant
 }
 
 impl<'window> WgpuCtx<'window> {
@@ -354,6 +356,7 @@ impl<'window> WgpuCtx<'window> {
             post_process_texture,
             post_process_texture_view,
             color_correction_effect,
+            time: Instant::now()
         }
     }
 
@@ -381,7 +384,7 @@ impl<'window> WgpuCtx<'window> {
             inv_view_proj: inv_view_proj.into(),
             view: view.into(),
             position,
-            _padding: Default::default(),
+            time: self.time.elapsed().as_secs_f32(),
         };
         self.queue.write_buffer(
             &self.camera_buffer,

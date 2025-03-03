@@ -19,7 +19,7 @@ struct CameraUniform {
     inv_view_proj: mat4x4<f32>,
     view: mat4x4<f32>,
     camera_position: vec3f,
-    _padding: f32,
+    time: f32,
 };
 
 struct VertexInput {
@@ -165,7 +165,6 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     return output;
 }
 
-
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4f {
     // Use the camera position as the ray origin
@@ -175,7 +174,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
     let dir = normalize(input.world_position - eye);
     
     // Sun light direction (fixed or could be passed as a uniform)
-    let light_dir = normalize(vec3f(0.0, 1.0, 1.0));
+    let light_dir = normalize(vec3f(0.0, sin(camera.time), 1.0));
     
     // Check if ray intersects atmosphere
     var e = ray_vs_sphere(eye, dir, R);
