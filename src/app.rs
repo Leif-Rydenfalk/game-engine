@@ -1,10 +1,11 @@
 use cgmath::{EuclideanSpace, Point3, SquareMatrix};
 // app.rs
 use hecs::World;
-use winit::dpi::Size;
 use std::sync::Arc;
 use std::time::Instant;
 use winit::application::ApplicationHandler;
+use winit::dpi::Size;
+use winit::event::MouseScrollDelta::*;
 use winit::event::WindowEvent;
 use winit::event::{DeviceEvent, DeviceId};
 use winit::event_loop::ActiveEventLoop;
@@ -28,7 +29,10 @@ pub struct App<'window> {
 impl<'window> ApplicationHandler for App<'window> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_none() {
-            let win_attr = Window::default_attributes().with_title("ECS WGPU Example").with_inner_size(winit::dpi::PhysicalSize::new(800, 800)).with_min_inner_size(winit::dpi::PhysicalSize::new(200, 200));
+            let win_attr = Window::default_attributes()
+                .with_title("ECS WGPU Example")
+                .with_inner_size(winit::dpi::PhysicalSize::new(800, 800))
+                .with_min_inner_size(winit::dpi::PhysicalSize::new(200, 200));
             let window = Arc::new(event_loop.create_window(win_attr).unwrap());
             self.window = Some(window.clone());
             self.wgpu_ctx = Some(WgpuCtx::new(window.clone()));
@@ -120,7 +124,12 @@ impl<'window> ApplicationHandler for App<'window> {
                         let view_proj = calculate_view_projection(transform, camera);
                         let inv_view_proj = view_proj.invert().unwrap();
                         let view = calculate_view_matrix(transform);
-                        wgpu_ctx.update_camera_uniform(view_proj,  inv_view_proj, view, transform.position.into());
+                        wgpu_ctx.update_camera_uniform(
+                            view_proj,
+                            inv_view_proj,
+                            view,
+                            transform.position.into(),
+                        );
                     }
                 }
 
@@ -141,6 +150,14 @@ impl<'window> ApplicationHandler for App<'window> {
             WindowEvent::CursorMoved { position, .. } => {
                 self.input_system.handle_cursor_moved(&position);
             }
+            WindowEvent::MouseWheel { delta, .. } => match delta {
+                LineDelta(_, y) => {
+                    self.input_system.handle_mouse_scroll(y as f64);
+                }
+                PixelDelta(d) => {
+                    self.input_system.handle_mouse_scroll(d.y);
+                }
+            },
             _ => (),
         }
     }

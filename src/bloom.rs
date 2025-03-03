@@ -84,7 +84,7 @@ impl BloomEffect {
         let vertical_blur_views = create_mip_views(&vertical_blur_texture, max_level);
 
         let settings = BloomSettings {
-            min_brightness: 0.1,
+            min_brightness: 0.0,
             max_brightness: 1.0,
             blur_radius: 1.0,
             blur_type: 0,

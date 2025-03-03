@@ -7,12 +7,12 @@ const TUNNEL_RADIUS: f32 = 1.1;
 const SURFACE_FACTOR: f32 = 0.42;
 const CAMERA_SPEED: f32 = -1.5;
 const CAMERA_TIME_OFFSET: f32 = 0.0;
-const VOXEL_LEVEL: i32 = 5; // Updated to match Shadertoy
-const VOXEL_SIZE: f32 = exp2(-f32(VOXEL_LEVEL)); // ≈ 0.03125
-const STEPS: i32 = 512;
-const MAX_DIST: f32 = 600.0;
-const MIN_DIST: f32 = 0.2;
-const EPS: f32 = 1e-4;
+const VOXEL_LEVEL: i32 = 6; 
+const VOXEL_SIZE: f32 = exp2(-f32(VOXEL_LEVEL)); 
+const STEPS: i32 = 512 * 2 * 2;
+const MAX_DIST: f32 = 600000.0;
+const MIN_DIST: f32 = VOXEL_SIZE;
+const EPS: f32 = 1e-5;
 const PI: f32 = 3.14159265359;
 const TAU: f32 = 6.28318530718;
 // Updated light color and direction to match Shadertoy
@@ -126,7 +126,6 @@ fn map(p: vec3f) -> f32 {
     // Combine with terrain using smooth minimum
     d = smax(d, MIN_DIST - camera_distance, 0.3);
     
-    
     return d;
 }
 fn grad(p: vec3f) -> vec3f {
@@ -183,7 +182,7 @@ fn trace(ro: vec3f, rd: vec3f, tmax: f32) -> HitInfo {
             }
             vpos += nrd * s;
             prd = nrd;
-            t = tF;
+            t = tF + EPS;
             vi += 1;
         }
         if t >= tmax || (rd.y > 0.0 && pos.y > MAX_HEIGHT) {

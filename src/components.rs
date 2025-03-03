@@ -39,6 +39,7 @@ impl Default for Camera {
 #[derive(Debug)]
 pub struct CameraController {
     pub move_speed: f32,
+    pub move_speed_mult: f32,
     pub look_speed: f32,
 }
 
@@ -46,6 +47,7 @@ impl Default for CameraController {
     fn default() -> Self {
         Self {
             move_speed: 5.0,
+            move_speed_mult: 1.0,
             look_speed: 0.003,
         }
     }

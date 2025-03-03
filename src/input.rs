@@ -1,7 +1,7 @@
 // input_system.rs
 use std::collections::HashMap;
 use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, MouseButton};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta};
 use winit::keyboard::KeyCode;
 
 #[derive(Default)]
@@ -12,6 +12,7 @@ pub struct Input {
     mouse_buttons_previous: HashMap<MouseButton, ElementState>,
     mouse_position: (f64, f64),
     mouse_delta: (f64, f64),
+    scroll_delta: f64,
 }
 
 impl Input {
@@ -36,10 +37,15 @@ impl Input {
         self.mouse_delta.1 += delta.1;
     }
 
+    pub fn handle_mouse_scroll(&mut self, delta: f64) {
+        self.scroll_delta += delta;
+    }
+
     pub fn update(&mut self) {
         self.keys_previous = self.keys_current.clone();
         self.mouse_buttons_previous = self.mouse_buttons_current.clone();
         self.mouse_delta = (0.0, 0.0);
+        self.scroll_delta = 0.0;
     }
 
     // Key state queries
@@ -78,5 +84,9 @@ impl Input {
 
     pub fn mouse_delta(&self) -> (f64, f64) {
         self.mouse_delta
+    }
+
+    pub fn scroll_delta(&self) -> f64 {
+        self.scroll_delta
     }
 }

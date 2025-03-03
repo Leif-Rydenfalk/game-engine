@@ -5,8 +5,13 @@ use std::time::Duration;
 
 pub fn update_camera_system(world: &mut World, input: &Input, dt: Duration) {
     // Get all entities with both Transform and CameraController components
-    for (_, (transform, controller)) in world.query_mut::<(&mut Transform, &CameraController)>() {
+    for (_, (transform, controller)) in world.query_mut::<(&mut Transform, &mut CameraController)>()
+    {
         let dt = dt.as_secs_f32();
+
+        controller.move_speed_mult +=
+            (controller.move_speed_mult * input.scroll_delta() as f32 * dt * 5.0) as f32;
+        println!("{}", controller.move_speed_mult);
 
         // Handle rotation
         if input.is_mouse_button_down(winit::event::MouseButton::Left) {
@@ -60,7 +65,8 @@ pub fn update_camera_system(world: &mut World, input: &Input, dt: Duration) {
         }
 
         if movement != Vector3::zero() {
-            movement = movement.normalize() * controller.move_speed * dt;
+            movement =
+                movement.normalize() * controller.move_speed * controller.move_speed_mult * dt;
             transform.position += movement;
         }
     }
