@@ -16,9 +16,10 @@ var<uniform> camera: CameraUniform;
 
 struct CameraUniform {
     view_proj: mat4x4<f32>,
+    inv_view_proj: mat4x4<f32>,
     view: mat4x4<f32>,
     camera_position: vec3f,
-    _padding: f32,
+    time: f32,
 };
 
 struct VertexInput {
@@ -128,6 +129,7 @@ fn in_scatter(o: vec3f, dir: vec3f, e: vec2f, l: vec3f) -> vec3f {
     return scatter;
 }
 
+
 @vertex
 fn vs_main(input: VertexInput) -> VertexOutput {
     var output: VertexOutput;
@@ -172,7 +174,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
     let dir = normalize(input.world_position - eye);
     
     // Sun light direction (fixed or could be passed as a uniform)
-    let light_dir = normalize(vec3f(0.0, 1.0, 1.0));
+    let light_dir = normalize(vec3f(0.0, sin(camera.time), 1.0));
     
     // Check if ray intersects atmosphere
     var e = ray_vs_sphere(eye, dir, R);
