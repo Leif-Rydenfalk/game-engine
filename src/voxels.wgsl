@@ -10,7 +10,7 @@ const CAMERA_TIME_OFFSET: f32 = 0.0;
 const VOXEL_LEVEL: i32 = 5; // Updated to match Shadertoy
 const VOXEL_SIZE: f32 = exp2(-f32(VOXEL_LEVEL)); // ≈ 0.03125
 const STEPS: i32 = 512;
-const MAX_DIST: f32 = 60.0;
+const MAX_DIST: f32 = 600.0;
 const EPS: f32 = 1e-4;
 const PI: f32 = 3.14159265359;
 const TAU: f32 = 6.28318530718;
@@ -85,6 +85,25 @@ fn hash23(p: vec3f) -> vec2f {
     var p3 = fract(p * vec3f(0.1031, 0.1030, 0.0973));
     p3 += dot(p3, p3.yzx + 33.33);
     return fract((p3.xx + p3.yz) * p3.zy);
+}
+fn triplanarLod(p: vec3f, n: vec3f, k: f32, tex_index: i32, lod: f32) -> vec3f {
+    let n_pow = pow(abs(n), vec3f(k));
+    let n_norm = n_pow / dot(n_pow, vec3f(1.0));
+    var col = vec3f(0.0);
+    if (tex_index == 0) {
+        col = textureSampleLevel(noise0_texture, terrain_sampler, p.yz, lod).rgb * n_norm.x +
+              textureSampleLevel(noise0_texture, terrain_sampler, p.xz, lod).rgb * n_norm.y +
+              textureSampleLevel(noise0_texture, terrain_sampler, p.xy, lod).rgb * n_norm.z;
+    } else if (tex_index == 2) {
+        col = textureSampleLevel(grain_texture, terrain_sampler, p.yz, lod).rgb * n_norm.x +
+              textureSampleLevel(grain_texture, terrain_sampler, p.xz, lod).rgb * n_norm.y +
+              textureSampleLevel(grain_texture, terrain_sampler, p.xy, lod).rgb * n_norm.z;
+    } else if (tex_index == 3) {
+        col = textureSampleLevel(dirt_texture, terrain_sampler, p.yz, lod).rgb * n_norm.x +
+              textureSampleLevel(dirt_texture, terrain_sampler, p.xz, lod).rgb * n_norm.y +
+              textureSampleLevel(dirt_texture, terrain_sampler, p.xy, lod).rgb * n_norm.z;
+    }
+    return col;
 }
 // Change 2: Modify the map function to use a sphere around the camera instead of a tunnel
 fn map(p: vec3f) -> f32 {
@@ -198,11 +217,11 @@ fn getBiome(pos: vec3f) -> vec2f {
     return vec2f(smoothstep(0.67, 0.672, desert), smoothstep(0.695, 0.7, snow));
 }
 fn getAlbedo(vpos: vec3f, gn: vec3f, lod: f32) -> vec3f {
-    var alb = vec3f(1.0) - triplanar(vpos * 0.08, gn, 4.0, 2);
+    var alb = vec3f(1.0) - triplanarLod(vpos * 0.08, gn, 4.0, 2, lod);
     alb *= alb;
-    var alb2 = vec3f(1.0) - triplanar(vpos * 0.08, gn, 4.0, 3);
+    var alb2 = vec3f(1.0) - triplanarLod(vpos * 0.08, gn, 4.0, 3, lod);
     alb2 *= alb2;
-    let k = triplanar(vpos * 0.0005, gn, 4.0, 0).r;
+    let k = triplanarLod(vpos * 0.0005, gn, 4.0, 0, 0.0).r;
     let wk = smoothstep(MAX_WATER_HEIGHT, MAX_WATER_HEIGHT + 0.5, vpos.y);
     let top = smoothstep(0.3, 0.7, gn.y);
     alb = alb * 0.95 * vec3f(1.0, 0.7, 0.65) + 0.05;
