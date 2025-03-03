@@ -11,6 +11,7 @@ const VOXEL_LEVEL: i32 = 5; // Updated to match Shadertoy
 const VOXEL_SIZE: f32 = exp2(-f32(VOXEL_LEVEL)); // ≈ 0.03125
 const STEPS: i32 = 512;
 const MAX_DIST: f32 = 600.0;
+const MIN_DIST: f32 = 1.0;
 const EPS: f32 = 1e-4;
 const PI: f32 = 3.14159265359;
 const TAU: f32 = 6.28318530718;
@@ -121,10 +122,9 @@ fn map(p: vec3f) -> f32 {
 
     let camera_pos = camera.camera_position;
     let camera_distance = length(p - camera_pos);
-    let exclusion_radius = 1.5; // Adjust radius as needed
     
     // Combine with terrain using smooth minimum
-    d = smax(d, exclusion_radius - camera_distance, 0.3);
+    d = smax(d, MIN_DIST - camera_distance, 0.3);
     
     
     return d;
