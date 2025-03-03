@@ -86,32 +86,28 @@ fn hash23(p: vec3f) -> vec2f {
     p3 += dot(p3, p3.yzx + 33.33);
     return fract((p3.xx + p3.yz) * p3.zy);
 }
-// Fixed: Added missing * operators
-fn getCameraPos(t: f32) -> vec3f {
-    let t_adj = t + CAMERA_TIME_OFFSET;
-    return vec3f(
-        (cos(t_adj * 0.35 * CAMERA_SPEED) + sin(t_adj * 0.25 * CAMERA_SPEED) * 0.5) * 0.55,
-        (sin(t_adj * 0.25 * CAMERA_SPEED) + cos(t_adj * 0.2 * CAMERA_SPEED) * 0.4) * 0.35,
-        t_adj * CAMERA_SPEED
-    );
-}
-// Fixed: Updated map function to match Shadertoy (including tp squaring)
+// Change 2: Modify the map function to use a sphere around the camera instead of a tunnel
 fn map(p: vec3f) -> f32 {
     var d: f32 = MAX_DIST;
     let sc: f32 = 0.3;
-    // Assuming noise1_texture is 32x32x32; adjust if different
+    // Terrain generation remains the same
     let q: vec3f = sc * p / 32.0 - vec3f(0.003, -0.006, 0.0);
     d = textureSample(noise1_texture, terrain_sampler, q * 1.0).r * 0.5;
     d += textureSample(noise1_texture, terrain_sampler, q * 2.0 + vec3f(0.3, 0.3, 0.3)).r * 0.25;
     d += textureSample(noise1_texture, terrain_sampler, q * 4.0 + vec3f(0.7, 0.7, 0.7)).r * 0.125;
     var tp = smoothstep(50.0, -6.0, p.y);
-    tp = tp * tp; // Added this line to match Shadertoy
-    // Fixed reversed equation to match Shadertoy
+    tp = tp * tp;
     d = (d/0.875 - SURFACE_FACTOR) / sc;
     d = smax(d, p.y - MAX_HEIGHT, 0.6);
-    let cam_pos = getCameraPos(p.z / CAMERA_SPEED - CAMERA_TIME_OFFSET);
-    let c = TUNNEL_RADIUS - length(p.xy - cam_pos.xy);
-    d = smax(d, c, 0.75);
+
+    let camera_pos = camera.camera_position;
+    let camera_distance = length(p - camera_pos);
+    let exclusion_radius = 1.5; // Adjust radius as needed
+    
+    // Combine with terrain using smooth minimum
+    d = smax(d, exclusion_radius - camera_distance, 0.3);
+    
+    
     return d;
 }
 fn grad(p: vec3f) -> vec3f {
@@ -290,7 +286,7 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 // Fragment Shader
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4f {
-    let ro = getCameraPos(camera.time);
+    let ro = camera.camera_position;
     let ndc = vec4f(input.tex_uv * 2.0 - 1.0, 1.0, 1.0);
     let world_pos = camera.inv_view_proj * ndc;
     let rd = normalize(world_pos.xyz / world_pos.w - ro);
