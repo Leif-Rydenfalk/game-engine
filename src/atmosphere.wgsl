@@ -129,55 +129,42 @@ fn in_scatter(o: vec3f, dir: vec3f, e: vec2f, l: vec3f) -> vec3f {
     return scatter;
 }
 
-
 @vertex
-fn vs_main(input: VertexInput) -> VertexOutput {
+fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
+    let positions = array<vec2f, 4>(
+        vec2f(-1.0, -1.0), vec2f(1.0, -1.0),
+        vec2f(-1.0, 1.0), vec2f(1.0, 1.0)
+    );
+    let tex_coords = array<vec2f, 4>(
+        vec2f(0.0, 0.0), vec2f(1.0, 0.0),
+        vec2f(0.0, 1.0), vec2f(1.0, 1.0)
+    );
     var output: VertexOutput;
-    
-    // Extract view-space right and up vectors from the view matrix
-    // The view matrix is the inverse of the camera transformation
-    let right = vec3f(camera.view[0][0], camera.view[1][0], camera.view[2][0]);
-    let up = vec3f(camera.view[0][1], camera.view[1][1], camera.view[2][1]);
-    
-    // Scale for the billboard (adjust as needed)
-    let scale = 4.0;
-    
-    // Create a billboard position by transforming the input vertex positions
-    // using the camera's right and up vectors
-    let billboard_pos = right * input.position.x * scale + 
-                        up * input.position.y * scale;
-    
-    // Place the billboard at the center position (0,0,0) or adjust as needed
-    let world_pos = billboard_pos;
-    
-    // Transform to clip space
-    output.position = camera.view_proj * vec4f(world_pos, 1.0);
-    
-    // Pass through texture coordinates
-    output.tex_uv = input.tex_uv;
-    
-    // Adjust normal to always face the camera
-    output.normal = normalize(camera.camera_position - world_pos);
-    
-    // Set world position for fragment shader calculations
-    output.world_position = world_pos;
-    
+    output.position = vec4f(positions[vertex_index], 0.0, 1.0);
+    output.tex_uv = tex_coords[vertex_index];
+    output.normal = vec3f(0.0, 0.0, 1.0);
+    output.world_position = vec3f(0.0);
     return output;
 }
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4f {
-    // Use the camera position as the ray origin
-    let eye = camera.camera_position;
+    // // Use the camera position as the ray origin
+    // let ro = camera.camera_position;
     
-    // Calculate ray direction from camera to the current fragment
-    let dir = normalize(input.world_position - eye);
+    // // Calculate ray direction from camera to the current fragment
+    // let rd = normalize(input.world_position - ro);
+
+    let ro = camera.camera_position;
+    let ndc = vec4f(input.tex_uv * 2.0 - 1.0, 1.0, 1.0);
+    let world_pos = camera.inv_view_proj * ndc;
+    let rd = normalize(world_pos.xyz / world_pos.w - ro);
     
     // Sun light direction (fixed or could be passed as a uniform)
     let light_dir = normalize(vec3f(0.0, sin(camera.time), 1.0));
     
     // Check if ray intersects atmosphere
-    var e = ray_vs_sphere(eye, dir, R);
+    var e = ray_vs_sphere(ro, rd, R);
     
     if (e.x > e.y) {
         // No intersection with atmosphere
@@ -185,10 +172,47 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
     }
     
     // Check if ray intersects planet
-    let f = ray_vs_sphere(eye, dir, R_INNER);
+    let f = ray_vs_sphere(ro, rd, R_INNER);
     e.y = min(e.y, f.x);
     
     // Calculate atmospheric scattering
-    let I = in_scatter(eye, dir, e, light_dir);
+    let I = in_scatter(ro, rd, e, light_dir);
     return vec4f(I * 10.0, 1.0);
 }
+
+
+// @vertex
+// fn vs_main(input: VertexInput) -> VertexOutput {
+//     var output: VertexOutput;
+    
+//     // Extract view-space right and up vectors from the view matrix
+//     // The view matrix is the inverse of the camera transformation
+//     let right = vec3f(camera.view[0][0], camera.view[1][0], camera.view[2][0]);
+//     let up = vec3f(camera.view[0][1], camera.view[1][1], camera.view[2][1]);
+    
+//     // Scale for the billboard (adjust as needed)
+//     let scale = 4.0;
+    
+//     // Create a billboard position by transforming the input vertex positions
+//     // using the camera's right and up vectors
+//     let billboard_pos = right * input.position.x * scale + 
+//                         up * input.position.y * scale;
+    
+//     // Place the billboard at the center position (0,0,0) or adjust as needed
+//     let world_pos = billboard_pos;
+    
+//     // Transform to clip space
+//     output.position = camera.view_proj * vec4f(world_pos, 1.0);
+    
+//     // Pass through texture coordinates
+//     output.tex_uv = input.tex_uv;
+    
+//     // Adjust normal to always face the camera
+//     output.normal = normalize(camera.camera_position - world_pos);
+    
+//     // Set world position for fragment shader calculations
+//     output.world_position = world_pos;
+    
+//     return output;
+// }
+

@@ -1,49 +1,42 @@
 use crate::*;
-use cgmath::{perspective, InnerSpace, Matrix4, Rad, Vector3, Zero};
+use cgmath::Rotation3;
+use cgmath::{perspective, InnerSpace, Matrix4, Quaternion, Rad, Vector3, Zero};
 use hecs::World;
 use std::time::Duration;
 
 pub fn update_camera_system(world: &mut World, input: &Input, dt: Duration) {
-    // Get all entities with both Transform and CameraController components
-    for (_, (transform, controller)) in world.query_mut::<(&mut Transform, &mut CameraController)>()
+    for (_, (transform, camera, controller)) in
+        world.query_mut::<(&mut Transform, &mut Camera, &mut CameraController)>()
     {
         let dt = dt.as_secs_f32();
 
+        // Update move speed multiplier with scroll
         controller.move_speed_mult +=
             (controller.move_speed_mult * input.scroll_delta() as f32 * dt * 5.0) as f32;
 
-        // Handle rotation
+        // Handle rotation using separate pitch and yaw
         if input.is_mouse_button_down(winit::event::MouseButton::Left) {
             let mouse_delta = input.mouse_delta();
-            transform.rotation.1 += Rad(mouse_delta.0 as f32 * controller.look_speed); // yaw
-            transform.rotation.0 += Rad(-mouse_delta.1 as f32 * controller.look_speed);
+
+            // Update yaw and pitch, with pitch clamping to prevent camera flipping
+            controller.yaw -= Rad(mouse_delta.0 as f32 * controller.look_speed);
+            controller.pitch -= Rad(mouse_delta.1 as f32 * controller.look_speed);
 
             // Clamp pitch to prevent camera flipping
-            transform.rotation.0 .0 = transform.rotation.0 .0.clamp(
-                -std::f32::consts::FRAC_PI_2 + 0.1,
-                std::f32::consts::FRAC_PI_2 - 0.1,
-            );
+            controller.pitch = controller.pitch;
 
-            // // Allow full rotation but flip the up vector when the camera is "upside down"
-            // let up = if transform.rotation.0 .0.abs() > std::f32::consts::FRAC_PI_2 {
-            //     -Vector3::unit_y()
-            // } else {
-            //     Vector3::unit_y()
-            // };
+            // Recreate rotation from yaw and pitch
+            transform.rotation = Quaternion::from_axis_angle(Vector3::unit_y(), controller.yaw)
+                * Quaternion::from_axis_angle(Vector3::unit_x(), controller.pitch);
         }
 
-        // Calculate movement vectors
-        let (sin_pitch, cos_pitch) = transform.rotation.0 .0.sin_cos();
-        let (sin_yaw, cos_yaw) = transform.rotation.1 .0.sin_cos();
-
-        let forward = Vector3::new(cos_yaw * cos_pitch, sin_pitch, sin_yaw * cos_pitch).normalize();
-
-        let right = forward.cross(Vector3::unit_y()).normalize();
-        let up = right.cross(forward).normalize();
+        // Calculate movement vectors using current rotation
+        let forward = transform.rotation * -Vector3::unit_z();
+        let right = transform.rotation * Vector3::unit_x();
+        let up = camera.up_vector;
 
         // Handle movement
         let mut movement = Vector3::zero();
-
         if input.is_key_down(winit::keyboard::KeyCode::KeyW) {
             movement += forward;
         }
@@ -63,6 +56,7 @@ pub fn update_camera_system(world: &mut World, input: &Input, dt: Duration) {
             movement -= up;
         }
 
+        // Apply movement
         if movement != Vector3::zero() {
             movement =
                 movement.normalize() * controller.move_speed * controller.move_speed_mult * dt;
@@ -72,12 +66,12 @@ pub fn update_camera_system(world: &mut World, input: &Input, dt: Duration) {
 }
 
 pub fn calculate_view_matrix(transform: &Transform) -> Matrix4<f32> {
-    let (sin_pitch, cos_pitch) = transform.rotation.0 .0.sin_cos();
-    let (sin_yaw, cos_yaw) = transform.rotation.1 .0.sin_cos();
+    let position = transform.position;
+    let forward = transform.rotation * -Vector3::unit_z();
+    let up = transform.rotation * Vector3::unit_y();
+    let target = position + forward;
 
-    let forward = Vector3::new(cos_yaw * cos_pitch, sin_pitch, sin_yaw * cos_pitch).normalize();
-
-    Matrix4::look_to_rh(transform.position, forward, Vector3::unit_y())
+    Matrix4::look_at_rh(position, target, up)
 }
 
 pub fn calculate_view_projection(transform: &Transform, camera: &Camera) -> Matrix4<f32> {
@@ -86,6 +80,6 @@ pub fn calculate_view_projection(transform: &Transform, camera: &Camera) -> Matr
     proj * view
 }
 
-pub fn calculate_view(transform: &Transform, camera: &Camera) -> Matrix4<f32> {
+pub fn calculate_view(transform: &Transform) -> Matrix4<f32> {
     calculate_view_matrix(transform)
 }
