@@ -1,3 +1,5 @@
+#![feature(portable_simd)]
+
 use crate::app::App;
 use winit::error::EventLoopError;
 use winit::event_loop::{ControlFlow, EventLoop};
@@ -41,3 +43,25 @@ fn main() -> Result<(), EventLoopError> {
     let mut app = App::default();
     event_loop.run_app(&mut app)
 }
+
+// use std::simd::*;
+// use std::time::Instant;
+
+// fn main() {
+//     const COUNT: usize = 1000;
+//     let mut x = vec![f32x32::splat(0.0); COUNT];
+//     let mut x_prev = x.clone();
+
+//     let start = Instant::now();
+
+//     let damp = f32x32::splat(0.99);
+
+//     for i in 0..COUNT {
+//         let diff = x[i] - x_prev[i];
+//         x[i] += diff * damp;
+//         x_prev[i] = x[i];
+//     }
+
+//     let duration = start.elapsed();
+//     println!("{:?}, {:?}", duration, x[0]);
+// }
