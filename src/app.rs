@@ -101,14 +101,20 @@ impl<'window> ApplicationHandler for App<'window> {
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                if let Key::Named(NamedKey::Escape) = event.logical_key {
-                    if event.state.is_pressed() {
-                        event_loop.exit();
+                let imgui = self.wgpu_ctx.as_mut().unwrap().imgui.as_mut().unwrap();
+                let io = imgui.context.io();
+                
+                // Only process keyboard input if ImGui isn't capturing it
+                if !io.want_capture_keyboard {
+                    if let Key::Named(NamedKey::Escape) = event.logical_key {
+                        if event.state.is_pressed() {
+                            event_loop.exit();
+                        }
                     }
-                }
-
-                if let PhysicalKey::Code(key) = event.physical_key {
-                    self.input_system.handle_key_input(key, event.state);
+            
+                    if let PhysicalKey::Code(key) = event.physical_key {
+                        self.input_system.handle_key_input(key, event.state);
+                    }
                 }
             }
             WindowEvent::RedrawRequested => {
@@ -148,10 +154,21 @@ impl<'window> ApplicationHandler for App<'window> {
                 self.input_system.update();
             }
             WindowEvent::MouseInput { button, state, .. } => {
-                self.input_system.handle_mouse_button(button, state);
+                let imgui = self.wgpu_ctx.as_mut().unwrap().imgui.as_mut().unwrap();
+                let io = imgui.context.io();
+                
+                if !io.want_capture_mouse {
+                    self.input_system.handle_mouse_button(button, state);
+                }
             }
+            
             WindowEvent::CursorMoved { position, .. } => {
-                self.input_system.handle_cursor_moved(&position);
+                let imgui = self.wgpu_ctx.as_mut().unwrap().imgui.as_mut().unwrap();
+                let io = imgui.context.io();
+                
+                if !io.want_capture_mouse {
+                    self.input_system.handle_cursor_moved(&position);
+                }
             }
             WindowEvent::MouseWheel { delta, .. } => match delta {
                 LineDelta(_, y) => {
