@@ -1,10 +1,108 @@
-// voxel.wgsl
-// Constants
 const PI: f32 = 3.14159265359;
-const TAU: f32 = 6.28318530718;
 const MAX: f32 = 10000.0;
 const R_INNER: f32 = 1.0;
 const R: f32 = R_INNER + 0.8;
+const NUM_OUT_SCATTER: i32 = 8;
+const NUM_IN_SCATTER: i32 = 80;
+
+// Ray intersects sphere
+// e = -b +/- sqrt(b^2 - c)
+fn ray_vs_sphere(p: vec3f, dir: vec3f, r: f32) -> vec2f {
+    let b = dot(p, dir);
+    let c = dot(p, p) - r * r;
+    let d = b * b - c;
+    if (d < 0.0) {
+        return vec2f(MAX, -MAX);
+    }
+    let sq_d = sqrt(d);
+    return vec2f(-b - sq_d, -b + sq_d);
+}
+
+// Mie scattering phase function
+// g: (-0.75, -0.999)
+fn phase_mie(g: f32, c: f32, cc: f32) -> f32 {
+    let gg = g * g;
+    let a = (1.0 - gg) * (1.0 + cc);
+    var b = 1.0 + gg - 2.0 * g * c;
+    b *= sqrt(b);
+    b *= 2.0 + gg;
+    return (3.0 / 8.0 / PI) * a / b;
+}
+
+// Rayleigh scattering phase function
+// g: 0
+fn phase_ray(cc: f32) -> f32 {
+    return (3.0 / 16.0 / PI) * (1.0 + cc);
+}
+
+// Atmospheric density at point
+fn density(p: vec3f, ph: f32) -> f32 {
+    return exp(-max(length(p) - R_INNER, 0.0) / ph);
+}
+
+// Optical depth calculation
+fn optic(p: vec3f, q: vec3f, ph: f32) -> f32 {
+    let s = (q - p) / f32(NUM_OUT_SCATTER);
+    var v = p + s * 0.5;
+    var sum = 0.0;
+    
+    for (var i = 0; i < NUM_OUT_SCATTER; i++) {
+        sum += density(v, ph);
+        v += s;
+    }
+    
+    sum *= length(s);
+    return sum;
+}
+
+// In-scattering calculation
+fn in_scatter(o: vec3f, dir: vec3f, e: vec2f, l: vec3f) -> vec3f {
+    let ph_ray = 0.05;
+    let ph_mie = 0.02;
+    let k_ray = vec3f(3.8, 13.5, 33.1);
+    let k_mie = vec3f(21.0);
+    let k_mie_ex = 1.1;
+    
+    var sum_ray = vec3f(0.0);
+    var sum_mie = vec3f(0.0);
+    var n_ray0 = 0.0;
+    var n_mie0 = 0.0;
+    
+    let len = (e.y - e.x) / f32(NUM_IN_SCATTER);
+    let s = dir * len;
+    var v = o + dir * (e.x + len * 0.5);
+    
+    for (var i = 0; i < NUM_IN_SCATTER; i++) {
+        v += s;
+        let d_ray = density(v, ph_ray) * len;
+        let d_mie = density(v, ph_mie) * len;
+        
+        n_ray0 += d_ray;
+        n_mie0 += d_mie;
+        
+        let f = ray_vs_sphere(v, l, R);
+        let u = v + l * f.y;
+        
+        let n_ray1 = optic(v, u, ph_ray);
+        let n_mie1 = optic(v, u, ph_mie);
+        
+        let att = exp(-(n_ray0 + n_ray1) * k_ray - (n_mie0 + n_mie1) * k_mie * k_mie_ex);
+        
+        sum_ray += d_ray * att;
+        sum_mie += d_mie * att;
+    }
+    
+    let c = dot(dir, -l);
+    let cc = c * c;
+    
+    let scatter = sum_ray * k_ray * phase_ray(cc) + sum_mie * k_mie * phase_mie(-0.78, c, cc);
+    return scatter;
+}
+
+
+
+// voxel.wgsl
+// Constants
 const MAX_HEIGHT: f32 = 5.0;
 const MAX_WATER_HEIGHT: f32 = -2.2;
 const WATER_HEIGHT: f32 = MAX_WATER_HEIGHT;
@@ -12,13 +110,14 @@ const TUNNEL_RADIUS: f32 = 1.1;
 const SURFACE_FACTOR: f32 = 0.42;
 const CAMERA_SPEED: f32 = -1.5;
 const CAMERA_TIME_OFFSET: f32 = 0.0;
-const VOXEL_LEVEL: i32 = 3; 
+const VOXEL_LEVEL: i32 = 6; 
 const VOXEL_SIZE: f32 = exp2(-f32(VOXEL_LEVEL)); 
 const STEPS: i32 = 512 * 2 * 2;
 const MAX_DIST: f32 = 600000.0;
-const MIN_DIST: f32 = 0.0001;
+const MIN_DIST: f32 = VOXEL_SIZE;
 const EPS: f32 = 1e-5;
-
+const PI: f32 = 3.14159265359;
+const TAU: f32 = 6.28318530718;
 // Updated light color and direction to match Shadertoy
 const lcol: vec3f = vec3f(1.0, 0.9, 0.75) * 2.0;
 // Fixed: Normalized light direction to match Shadertoy
@@ -100,6 +199,7 @@ fn triplanarLod(p: vec3f, n: vec3f, k: f32, tex_index: i32, lod: f32) -> vec3f {
     }
     return col;
 }
+// Change 2: Modify the map function to use a sphere around the camera instead of a tunnel
 fn map(p: vec3f) -> f32 {
     var d: f32 = MAX_DIST;
     let sc: f32 = 0.3;
@@ -113,11 +213,11 @@ fn map(p: vec3f) -> f32 {
     d = (d/0.875 - SURFACE_FACTOR) / sc;
     d = smax(d, p.y - MAX_HEIGHT, 0.6);
 
-    // let camera_pos = camera.camera_position;
-    // let camera_distance = length(p - camera_pos);
+    let camera_pos = camera.camera_position;
+    let camera_distance = length(p - camera_pos);
     
-    // // Remove terrain to close to the camera
-    // d = smax(d, MIN_DIST - camera_distance, 0.3);
+    // Remove terrain to close to the camera
+    d = smax(d, MIN_DIST - camera_distance, 0.3);
     
     return d;
 }
@@ -276,7 +376,6 @@ fn getSky(rd: vec3f) -> vec3f {
     let cost = max(dot(rd, ldir), 0.0);
     let dist = cost - sunCost;
     return col;
-    // return skyCol;
 }
 fn ACESFilm(x: vec3f) -> vec3f {
     let a = 2.51; let b = 0.03; let c = 2.43; let d = 0.59; let e = 0.14;
@@ -394,9 +493,6 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
             col = mix(col, col + vec3f(1.0), foam_mask * 0.4);
         }
     }
-
-    // let cost = max(dot(rd, ldir), 0.0);
-    // col += 0.12 * lcol * pow(cost, 6.0);
     
     if SHOW_NORMALS {
         col = hit.n;

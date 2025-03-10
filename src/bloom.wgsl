@@ -160,6 +160,7 @@ fn composite_main(@builtin(global_invocation_id) id: vec3<u32>) {
     
     // Sample scene texture
     var color = textureLoad(scene_tex, vec2<i32>(i32(id.x), i32(id.y)), 0).rgb;
+    color = ACESFilm(color);
 
     var bloom = vec3<f32>(0.0);
 
@@ -174,8 +175,18 @@ fn composite_main(@builtin(global_invocation_id) id: vec3<u32>) {
     bloom += textureSampleBicubic(bloom7, bloom_sampler, uv).rgb * 1.0;
 
     // Add bloom to scene color
-    // color += bloom * 0.5;
+    // color += bloom * 0.3;
 
     // Write to output texture
     textureStore(output_tex, vec2<i32>(i32(id.x), i32(id.y)), vec4<f32>(color, 1.0));
+}
+
+fn ACESFilm(x: vec3<f32>) -> vec3<f32> {
+    let a: f32 = 2.51;
+    let b: f32 = 0.03;
+    let c: f32 = 2.43;
+    let d: f32 = 0.59;
+    let e: f32 = 0.14;
+
+    return clamp((x * (a * x + vec3<f32>(b))) / (x * (c * x + vec3<f32>(d)) + vec3<f32>(e)), vec3<f32>(0.0), vec3<f32>(1.0));
 }

@@ -6,12 +6,25 @@ use crate::{
 use cgmath::{Matrix4, SquareMatrix};
 use hecs::World;
 use std::borrow::Cow;
-use std::path::Path;
-use std::sync::Arc;
-use std::time::Instant;
+use std::{path::Path, sync::Arc, time::Instant};
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 use wgpu::{MemoryHints, SamplerDescriptor, ShaderSource};
 use winit::window::Window;
+
+use imgui::*;
+use imgui_wgpu::{Renderer, RendererConfig};
+use imgui_winit_support::WinitPlatform;
+use pollster::block_on;
+
+pub struct ImguiState {
+    pub context: imgui::Context,
+    pub platform: WinitPlatform,
+    pub renderer: Renderer,
+    pub clear_color: wgpu::Color,
+    pub demo_open: bool,
+    pub last_frame: Instant,
+    pub last_cursor: Option<MouseCursor>,
+}
 
 #[repr(C)]
 #[derive(Default, Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
@@ -56,6 +69,8 @@ pub struct WgpuCtx<'window> {
     terrain_bind_group_layout: wgpu::BindGroupLayout,
     terrain_bind_group: wgpu::BindGroup,
     time: Instant,
+    hidpi_factor: f64,
+    pub imgui: Option<ImguiState>,
 }
 
 impl<'window> WgpuCtx<'window> {
@@ -537,6 +552,61 @@ impl<'window> WgpuCtx<'window> {
             surface_config.format,
         );
 
+        let hidpi_factor = window.scale_factor();
+
+        let imgui = {
+            let mut context = imgui::Context::create();
+            let mut platform = imgui_winit_support::WinitPlatform::new(&mut context);
+            platform.attach_window(
+                context.io_mut(),
+                &window,
+                imgui_winit_support::HiDpiMode::Default,
+            );
+            context.set_ini_filename(None);
+
+            let font_size = (13.0 * hidpi_factor) as f32;
+            context.io_mut().font_global_scale = (1.0 / hidpi_factor) as f32;
+
+            context.fonts().add_font(&[FontSource::DefaultFontData {
+                config: Some(imgui::FontConfig {
+                    oversample_h: 1,
+                    pixel_snap_h: true,
+                    size_pixels: font_size,
+                    ..Default::default()
+                }),
+            }]);
+
+            //
+            // Set up dear imgui wgpu renderer
+            //
+            let clear_color = wgpu::Color {
+                r: 0.1,
+                g: 0.2,
+                b: 0.3,
+                a: 1.0,
+            };
+
+            let renderer_config = RendererConfig {
+                texture_format: surface_config.format,
+                ..Default::default()
+            };
+
+            let renderer = Renderer::new(&mut context, &device, &queue, renderer_config);
+            let last_frame = Instant::now();
+            let last_cursor = None;
+            let demo_open = true;
+
+            ImguiState {
+                context,
+                platform,
+                renderer,
+                clear_color,
+                demo_open,
+                last_frame,
+                last_cursor,
+            }
+        };
+
         WgpuCtx {
             surface,
             surface_config,
@@ -574,6 +644,8 @@ impl<'window> WgpuCtx<'window> {
             terrain_bind_group_layout,
             terrain_bind_group,
             time: Instant::now(),
+            imgui: Some(imgui),
+            hidpi_factor,
         }
     }
 
@@ -676,7 +748,7 @@ impl<'window> WgpuCtx<'window> {
     }
 
     /// Renders the scene with post-processing effects
-    pub fn draw(&mut self, world: &World) {
+    pub fn draw(&mut self, world: &World, window: &Window) {
         let surface_texture = self
             .surface
             .get_current_texture()
@@ -744,6 +816,73 @@ impl<'window> WgpuCtx<'window> {
             });
         self.color_correction_effect
             .apply(&mut encoder, &surface_texture_view);
+
+        // Render ImGui if available
+        if let Some(imgui) = &mut self.imgui {
+            // Setup UI first
+            // Update time delta
+            let now = Instant::now();
+            imgui
+                .context
+                .io_mut()
+                .update_delta_time(now - imgui.last_frame);
+            imgui.last_frame = now;
+
+            // Prepare frame
+            imgui
+                .platform
+                .prepare_frame(imgui.context.io_mut(), window)
+                .expect("Failed to prepare ImGui frame");
+            let ui = imgui.context.frame();
+
+            // Build your UI here
+            {
+                let window = ui.window("Settings");
+                window
+                    .size([300.0, 200.0], Condition::FirstUseEver)
+                    .build(|| {
+                        ui.text("Hello from ImGui!");
+                        ui.separator();
+
+                        // Add more UI controls here
+                        // For example, you could expose post-processing settings:
+                        ui.slider("Brightness", 0.5, 2.0, &mut 1.0);
+                    });
+
+                // Show demo window (useful while developing)
+                ui.show_demo_window(&mut imgui.demo_open);
+            }
+
+            // Update cursor if changed
+            if imgui.last_cursor != ui.mouse_cursor() {
+                imgui.last_cursor = ui.mouse_cursor();
+                imgui.platform.prepare_render(ui, window);
+            }
+
+            // Render ImGui UI on top of the scene
+            imgui
+                .renderer
+                .render(
+                    imgui.context.render(),
+                    &self.queue,
+                    &self.device,
+                    &mut encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("ImGui Render Pass"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &surface_texture_view,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Load, // Important: Load existing content
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                    }),
+                )
+                .expect("ImGui rendering failed");
+        }
 
         self.queue.submit(Some(encoder.finish()));
         surface_texture.present();

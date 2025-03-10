@@ -12,7 +12,7 @@ const TUNNEL_RADIUS: f32 = 1.1;
 const SURFACE_FACTOR: f32 = 0.42;
 const CAMERA_SPEED: f32 = -1.5;
 const CAMERA_TIME_OFFSET: f32 = 0.0;
-const VOXEL_LEVEL: i32 = 3; 
+const VOXEL_LEVEL: i32 = 6; 
 const VOXEL_SIZE: f32 = exp2(-f32(VOXEL_LEVEL)); 
 const STEPS: i32 = 512 * 2 * 2;
 const MAX_DIST: f32 = 600000.0;
@@ -276,7 +276,6 @@ fn getSky(rd: vec3f) -> vec3f {
     let cost = max(dot(rd, ldir), 0.0);
     let dist = cost - sunCost;
     return col;
-    // return skyCol;
 }
 fn ACESFilm(x: vec3f) -> vec3f {
     let a = 2.51; let b = 0.03; let c = 2.43; let d = 0.59; let e = 0.14;
@@ -394,9 +393,6 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
             col = mix(col, col + vec3f(1.0), foam_mask * 0.4);
         }
     }
-
-    // let cost = max(dot(rd, ldir), 0.0);
-    // col += 0.12 * lcol * pow(cost, 6.0);
     
     if SHOW_NORMALS {
         col = hit.n;

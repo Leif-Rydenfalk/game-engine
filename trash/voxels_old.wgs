@@ -1,10 +1,5 @@
 // voxel.wgsl
 // Constants
-const PI: f32 = 3.14159265359;
-const TAU: f32 = 6.28318530718;
-const MAX: f32 = 10000.0;
-const R_INNER: f32 = 1.0;
-const R: f32 = R_INNER + 0.8;
 const MAX_HEIGHT: f32 = 5.0;
 const MAX_WATER_HEIGHT: f32 = -2.2;
 const WATER_HEIGHT: f32 = MAX_WATER_HEIGHT;
@@ -12,13 +7,14 @@ const TUNNEL_RADIUS: f32 = 1.1;
 const SURFACE_FACTOR: f32 = 0.42;
 const CAMERA_SPEED: f32 = -1.5;
 const CAMERA_TIME_OFFSET: f32 = 0.0;
-const VOXEL_LEVEL: i32 = 3; 
+const VOXEL_LEVEL: i32 = 6; 
 const VOXEL_SIZE: f32 = exp2(-f32(VOXEL_LEVEL)); 
 const STEPS: i32 = 512 * 2 * 2;
 const MAX_DIST: f32 = 600000.0;
-const MIN_DIST: f32 = 0.0001;
+const MIN_DIST: f32 = VOXEL_SIZE;
 const EPS: f32 = 1e-5;
-
+const PI: f32 = 3.14159265359;
+const TAU: f32 = 6.28318530718;
 // Updated light color and direction to match Shadertoy
 const lcol: vec3f = vec3f(1.0, 0.9, 0.75) * 2.0;
 // Fixed: Normalized light direction to match Shadertoy
@@ -100,6 +96,7 @@ fn triplanarLod(p: vec3f, n: vec3f, k: f32, tex_index: i32, lod: f32) -> vec3f {
     }
     return col;
 }
+// Change 2: Modify the map function to use a sphere around the camera instead of a tunnel
 fn map(p: vec3f) -> f32 {
     var d: f32 = MAX_DIST;
     let sc: f32 = 0.3;
@@ -113,11 +110,11 @@ fn map(p: vec3f) -> f32 {
     d = (d/0.875 - SURFACE_FACTOR) / sc;
     d = smax(d, p.y - MAX_HEIGHT, 0.6);
 
-    // let camera_pos = camera.camera_position;
-    // let camera_distance = length(p - camera_pos);
+    let camera_pos = camera.camera_position;
+    let camera_distance = length(p - camera_pos);
     
-    // // Remove terrain to close to the camera
-    // d = smax(d, MIN_DIST - camera_distance, 0.3);
+    // Remove terrain to close to the camera
+    d = smax(d, MIN_DIST - camera_distance, 0.3);
     
     return d;
 }
@@ -276,7 +273,6 @@ fn getSky(rd: vec3f) -> vec3f {
     let cost = max(dot(rd, ldir), 0.0);
     let dist = cost - sunCost;
     return col;
-    // return skyCol;
 }
 fn ACESFilm(x: vec3f) -> vec3f {
     let a = 2.51; let b = 0.03; let c = 2.43; let d = 0.59; let e = 0.14;
@@ -394,9 +390,6 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
             col = mix(col, col + vec3f(1.0), foam_mask * 0.4);
         }
     }
-
-    // let cost = max(dot(rd, ldir), 0.0);
-    // col += 0.12 * lcol * pow(cost, 6.0);
     
     if SHOW_NORMALS {
         col = hit.n;

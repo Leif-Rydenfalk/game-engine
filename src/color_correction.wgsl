@@ -36,8 +36,10 @@ fn tonemap(color: vec3<f32>) -> vec3<f32> {
     // c = mix(c, c * c * (3.0 - 2.0 * c), vec3<f32>(1.0));
     // c = pow(c, vec3<f32>(1.3, 1.20, 1.0));
     // c = pow(c, vec3<f32>(0.7 / 2.2));
-    // c = ACESFilm(c * 0.35);
-    c = ACESFilm(c);
+
+
+    // c = ACESFilm(c * 0.3);
+    // c = ACESFilm(c);
     // c = linearTosRGB(c);
     return c;
 }
