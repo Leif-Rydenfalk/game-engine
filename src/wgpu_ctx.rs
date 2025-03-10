@@ -841,7 +841,21 @@ impl<'window> WgpuCtx<'window> {
                 window
                     .size([300.0, 200.0], Condition::FirstUseEver)
                     .build(|| {
-                        ui.text("Hello from ImGui!");
+                        // Add buttons to test mouse capture
+                        if ui.button("Test Button") {
+                            println!("ImGui button clicked!");
+                        }
+                        
+                        // Add input field to test keyboard capture
+                        let mut test_input = String::new();
+                        ui.input_text("Test Input", &mut test_input).build();
+                        
+                        // Debug info
+                        ui.text(format!(
+                            "ImGui wants capture: Mouse={}, Keyboard={}", 
+                            ui.io().want_capture_mouse, 
+                            ui.io().want_capture_keyboard
+                        ));
                         ui.separator();
                     });
 
