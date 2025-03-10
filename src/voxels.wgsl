@@ -279,8 +279,6 @@ fn getSky(rd: vec3f) -> vec3f {
     let skyCol = vec3f(0.353, 0.611, 1.0);
     let skyCol2 = vec3f(0.8, 0.9, 1.0);
     var col = mix(skyCol2, skyCol, smoothstep(0.0, 0.2, rd.y)) * 1.2;
-    
-    // Sun with exact parameters from Shadertoy
     let sunCost = cos(0.52 * PI / 180.0);
     let cost = max(dot(rd, ldir), 0.0);
     let dist = cost - sunCost;
@@ -299,7 +297,6 @@ fn linearTosRGB(col: vec3f) -> vec3f {
         vec3f(lessThanEqual(col, vec3f(0.0031308)))
     );
 }
-// Vertex Shader
 @vertex
 fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     let positions = array<vec2f, 4>(
@@ -317,8 +314,6 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     output.world_position = vec3f(0.0);
     return output;
 }
-// Fragment Shader
-// Fragment Shader
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4f {
     let ro = camera.camera_position;
@@ -341,36 +336,32 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
         let lod = clamp(log2(distance(ro, hit.id)) - 2.0, 0.0, 6.0);
         col = shade(pos, ldir, lod, hit);
         
-        let a = 0.012;
-        let b = 0.08;
-        let fog = (a / b) * exp(-(ro.y - WATER_HEIGHT) * b) *
-                  (1.0 - exp(-t * rd.y * b)) / max(rd.y, EPS);
-        let biome = getBiome(hit.id);
-        let fogCol = mix(vec3f(0.5, 0.8, 1.0), vec3f(1.0, 0.85, 0.6), biome.x);
-        col = mix(col, fogCol, clamp(fog, 0.0, 1.0));
+        // let a = 0.0;
+        // let b = 0.2;
+        // let fog = (a / b) * exp(-(ro.y - WATER_HEIGHT) * b) *
+        //           (1.0 - exp(-t * rd.y * b)) / max(rd.y, EPS);
+        // let biome = getBiome(hit.id);
+        // let fogCol = mix(vec3f(0.5, 0.8, 1.0), vec3f(1.0, 0.85, 0.6), biome.x);
+        // col = mix(col, fogCol, clamp(fog, 0.0, 1.0));
     } else {
         col = getSky(rd);
         t = MAX_DIST;
     }
     
-    // Improved water rendering
     let pt = -(ro.y - WATER_HEIGHT) / rd.y;
-    if (pt > 0.0 && pt < t || ro.y < WATER_HEIGHT) {
+    if ((pt > 0.0 && pt < t)) || ro.y < WATER_HEIGHT {
         if !hit.is_hit {
             let biome = getBiome(ro + rd * pt);
             col = mix(vec3f(0.5, 0.8, 1.0), vec3f(1.0, 0.85, 0.6), biome.x);
         }
         
-        // Water colors - adjusted for deeper appearance
         let biome = getBiome(ro + rd * pt);
         var wcol = vec3f(0.3, 0.8, 1.0);
         wcol = mix(wcol, vec3f(0.4, 0.9, 0.8), biome.x);
         wcol = mix(wcol, vec3f(0.1, 0.7, 0.9), biome.y);
         
-        // Darker water absorption
         let wabs = vec3f(0.1, 0.7, 0.9);
         
-        // Handle underwater case
         var adjusted_pt = pt;
         if (ro.y < WATER_HEIGHT && pt < 0.0) {
             adjusted_pt = MAX_DIST;
@@ -378,7 +369,6 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
         
         let wpos = ro + rd * adjusted_pt;
         
-        // Water normal calculation
         let e = 0.001;
         let wnstr = 1500.0;
         let wo = vec2f(1.0, 0.8) * camera.time * 0.01;
@@ -389,7 +379,6 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
         let wn = normalize(vec3f(wh - whdx, e * wnstr, wh - whdy));
         let wref = reflect(rd, wn);
         
-        // Reflection color
         var rcol = vec3f(0.0);
         if (ro.y > WATER_HEIGHT) {
             let hitR = trace(wpos + vec3f(0.0, 0.01, 0.0), wref, 15.0);
@@ -413,7 +402,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
             fre = 0.0;
         }
         
-        // Water absorption - increased for deeper appearance
+        // Water absorption
         let abt = select(t - pt, min(t, pt), ro.y < WATER_HEIGHT);
         col *= exp(-abt * (1.0 - wabs) * 0.1);
         
@@ -429,7 +418,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
         }
     }
     
-    // Color correction (matching ShaderToy)
+    // Color correction
     let cost = max(dot(rd, ldir), 0.0);
     col += 0.12 * lcol * pow(cost, 6.0);
     
