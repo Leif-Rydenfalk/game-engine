@@ -33,7 +33,7 @@ impl<'window> ApplicationHandler for App<'window> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_none() {
             let win_attr = Window::default_attributes()
-                .with_title("ECS WGPU Example")
+                .with_title("Voxel Renderer")
                 .with_inner_size(winit::dpi::PhysicalSize::new(800, 800))
                 .with_min_inner_size(winit::dpi::PhysicalSize::new(200, 200));
             let window = Arc::new(event_loop.create_window(win_attr).unwrap());

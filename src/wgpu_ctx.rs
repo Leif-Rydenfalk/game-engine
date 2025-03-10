@@ -837,16 +837,12 @@ impl<'window> WgpuCtx<'window> {
 
             // Build your UI here
             {
-                let window = ui.window("Settings");
+                let window = ui.window("Voxel Settings");
                 window
                     .size([300.0, 200.0], Condition::FirstUseEver)
                     .build(|| {
                         ui.text("Hello from ImGui!");
                         ui.separator();
-
-                        // Add more UI controls here
-                        // For example, you could expose post-processing settings:
-                        ui.slider("Brightness", 0.5, 2.0, &mut 1.0);
                     });
 
                 // Show demo window (useful while developing)
