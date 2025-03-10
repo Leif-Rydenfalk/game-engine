@@ -14,3 +14,6 @@ log = "0.4"
 hecs = "0.10"
 cgmath = "0.18"
 gltf = "1.4"
+imgui-wgpu = { path = "lib/imgui-wgpu-rs" }
+imgui = "0.12"
+imgui-winit-support = "0.13"

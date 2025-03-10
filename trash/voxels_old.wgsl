@@ -1,3 +1,106 @@
+const PI: f32 = 3.14159265359;
+const MAX: f32 = 10000.0;
+const R_INNER: f32 = 1.0;
+const R: f32 = R_INNER + 0.8;
+const NUM_OUT_SCATTER: i32 = 8;
+const NUM_IN_SCATTER: i32 = 80;
+
+// Ray intersects sphere
+// e = -b +/- sqrt(b^2 - c)
+fn ray_vs_sphere(p: vec3f, dir: vec3f, r: f32) -> vec2f {
+    let b = dot(p, dir);
+    let c = dot(p, p) - r * r;
+    let d = b * b - c;
+    if (d < 0.0) {
+        return vec2f(MAX, -MAX);
+    }
+    let sq_d = sqrt(d);
+    return vec2f(-b - sq_d, -b + sq_d);
+}
+
+// Mie scattering phase function
+// g: (-0.75, -0.999)
+fn phase_mie(g: f32, c: f32, cc: f32) -> f32 {
+    let gg = g * g;
+    let a = (1.0 - gg) * (1.0 + cc);
+    var b = 1.0 + gg - 2.0 * g * c;
+    b *= sqrt(b);
+    b *= 2.0 + gg;
+    return (3.0 / 8.0 / PI) * a / b;
+}
+
+// Rayleigh scattering phase function
+// g: 0
+fn phase_ray(cc: f32) -> f32 {
+    return (3.0 / 16.0 / PI) * (1.0 + cc);
+}
+
+// Atmospheric density at point
+fn density(p: vec3f, ph: f32) -> f32 {
+    return exp(-max(length(p) - R_INNER, 0.0) / ph);
+}
+
+// Optical depth calculation
+fn optic(p: vec3f, q: vec3f, ph: f32) -> f32 {
+    let s = (q - p) / f32(NUM_OUT_SCATTER);
+    var v = p + s * 0.5;
+    var sum = 0.0;
+    
+    for (var i = 0; i < NUM_OUT_SCATTER; i++) {
+        sum += density(v, ph);
+        v += s;
+    }
+    
+    sum *= length(s);
+    return sum;
+}
+
+// In-scattering calculation
+fn in_scatter(o: vec3f, dir: vec3f, e: vec2f, l: vec3f) -> vec3f {
+    let ph_ray = 0.05;
+    let ph_mie = 0.02;
+    let k_ray = vec3f(3.8, 13.5, 33.1);
+    let k_mie = vec3f(21.0);
+    let k_mie_ex = 1.1;
+    
+    var sum_ray = vec3f(0.0);
+    var sum_mie = vec3f(0.0);
+    var n_ray0 = 0.0;
+    var n_mie0 = 0.0;
+    
+    let len = (e.y - e.x) / f32(NUM_IN_SCATTER);
+    let s = dir * len;
+    var v = o + dir * (e.x + len * 0.5);
+    
+    for (var i = 0; i < NUM_IN_SCATTER; i++) {
+        v += s;
+        let d_ray = density(v, ph_ray) * len;
+        let d_mie = density(v, ph_mie) * len;
+        
+        n_ray0 += d_ray;
+        n_mie0 += d_mie;
+        
+        let f = ray_vs_sphere(v, l, R);
+        let u = v + l * f.y;
+        
+        let n_ray1 = optic(v, u, ph_ray);
+        let n_mie1 = optic(v, u, ph_mie);
+        
+        let att = exp(-(n_ray0 + n_ray1) * k_ray - (n_mie0 + n_mie1) * k_mie * k_mie_ex);
+        
+        sum_ray += d_ray * att;
+        sum_mie += d_mie * att;
+    }
+    
+    let c = dot(dir, -l);
+    let cc = c * c;
+    
+    let scatter = sum_ray * k_ray * phase_ray(cc) + sum_mie * k_mie * phase_mie(-0.78, c, cc);
+    return scatter;
+}
+
+
+
 // voxel.wgsl
 // Constants
 const MAX_HEIGHT: f32 = 5.0;
@@ -58,16 +161,6 @@ struct HitInfo {
     i: i32,
 };
 // Utility Functions
-fn lessThanEqual(a: vec3f, b: vec3f) -> vec3f {
-    var one = 0.0;
-    if a.x <= b.x { one = 1.0; } else { one = 0.0; };
-    var two = 0.0;
-    if a.y <= b.y { two = 1.0; } else { two = 0.0; };
-    var three = 0.0;
-    if a.z <= b.z { three = 1.0; } else { three = 0.0; };
-    return vec3f(one, two, three);
-}
-// Fixed: Added missing * operators
 fn smin(d1: f32, d2: f32, k: f32) -> f32 {
     let h = clamp(0.5 + 0.5 * (d2 - d1) / k, 0.0, 1.0);
     return mix(d2, d1, h) - k * h * (1.0 - h);
@@ -123,7 +216,7 @@ fn map(p: vec3f) -> f32 {
     let camera_pos = camera.camera_position;
     let camera_distance = length(p - camera_pos);
     
-    // Combine with terrain using smooth minimum
+    // Remove terrain to close to the camera
     d = smax(d, MIN_DIST - camera_distance, 0.3);
     
     return d;
@@ -279,27 +372,15 @@ fn getSky(rd: vec3f) -> vec3f {
     let skyCol = vec3f(0.353, 0.611, 1.0);
     let skyCol2 = vec3f(0.8, 0.9, 1.0);
     var col = mix(skyCol2, skyCol, smoothstep(0.0, 0.2, rd.y)) * 1.2;
-    
-    // Sun with exact parameters from Shadertoy
     let sunCost = cos(0.52 * PI / 180.0);
     let cost = max(dot(rd, ldir), 0.0);
     let dist = cost - sunCost;
-    let bloom = max(1.0 / (0.02 - min(dist, 0.0) * 500.0), 0.0) * 0.02;
-    col += 10.0 * lcol * (smoothstep(0.0, 0.0001, dist) + bloom);
     return col;
 }
 fn ACESFilm(x: vec3f) -> vec3f {
     let a = 2.51; let b = 0.03; let c = 2.43; let d = 0.59; let e = 0.14;
     return clamp((x * (a * x + b)) / (x * (c * x + d) + e), vec3f(0.0), vec3f(1.0));
 }
-fn linearTosRGB(col: vec3f) -> vec3f {
-    return mix(
-        1.055 * pow(col, vec3f(1.0 / 2.4)) - 0.055,
-        col * 12.92,
-        vec3f(lessThanEqual(col, vec3f(0.0031308)))
-    );
-}
-
 @vertex
 fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     let positions = array<vec2f, 4>(
@@ -317,7 +398,6 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     output.world_position = vec3f(0.0);
     return output;
 }
-
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4f {
     let ro = camera.camera_position;
@@ -339,37 +419,25 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
         let pos = ro + rd * hit.t;
         let lod = clamp(log2(distance(ro, hit.id)) - 2.0, 0.0, 6.0);
         col = shade(pos, ldir, lod, hit);
-        
-        let a = 0.012;
-        let b = 0.08;
-        let fog = (a / b) * exp(-(ro.y - WATER_HEIGHT) * b) *
-                  (1.0 - exp(-t * rd.y * b)) / max(rd.y, EPS);
-        let biome = getBiome(hit.id);
-        let fogCol = mix(vec3f(0.5, 0.8, 1.0), vec3f(1.0, 0.85, 0.6), biome.x);
-        col = mix(col, fogCol, clamp(fog, 0.0, 1.0));
     } else {
         col = getSky(rd);
         t = MAX_DIST;
     }
     
-    // Improved water rendering
     let pt = -(ro.y - WATER_HEIGHT) / rd.y;
-    if (pt > 0.0 && pt < t || ro.y < WATER_HEIGHT) {
+    if ((pt > 0.0 && pt < t)) || ro.y < WATER_HEIGHT {
         if !hit.is_hit {
             let biome = getBiome(ro + rd * pt);
             col = mix(vec3f(0.5, 0.8, 1.0), vec3f(1.0, 0.85, 0.6), biome.x);
         }
         
-        // Water colors - adjusted for deeper appearance
         let biome = getBiome(ro + rd * pt);
         var wcol = vec3f(0.3, 0.8, 1.0);
         wcol = mix(wcol, vec3f(0.4, 0.9, 0.8), biome.x);
         wcol = mix(wcol, vec3f(0.1, 0.7, 0.9), biome.y);
         
-        // Darker water absorption
         let wabs = vec3f(0.1, 0.7, 0.9);
         
-        // Handle underwater case
         var adjusted_pt = pt;
         if (ro.y < WATER_HEIGHT && pt < 0.0) {
             adjusted_pt = MAX_DIST;
@@ -377,7 +445,6 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
         
         let wpos = ro + rd * adjusted_pt;
         
-        // Water normal calculation
         let e = 0.001;
         let wnstr = 1500.0;
         let wo = vec2f(1.0, 0.8) * camera.time * 0.01;
@@ -388,7 +455,6 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
         let wn = normalize(vec3f(wh - whdx, e * wnstr, wh - whdy));
         let wref = reflect(rd, wn);
         
-        // Reflection color
         var rcol = vec3f(0.0);
         if (ro.y > WATER_HEIGHT) {
             let hitR = trace(wpos + vec3f(0.0, 0.01, 0.0), wref, 15.0);
@@ -412,7 +478,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
             fre = 0.0;
         }
         
-        // Water absorption - increased for deeper appearance
+        // Water absorption
         let abt = select(t - pt, min(t, pt), ro.y < WATER_HEIGHT);
         col *= exp(-abt * (1.0 - wabs) * 0.1);
         
@@ -428,10 +494,6 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
         }
     }
     
-    // Color correction (matching ShaderToy)
-    let cost = max(dot(rd, ldir), 0.0);
-    col += 0.12 * lcol * pow(cost, 6.0);
-    
     if SHOW_NORMALS {
         col = hit.n;
     }
@@ -440,11 +502,5 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
         col = vec3f(f32(hit.i) / f32(STEPS));
     }
     
-    col = max(col, vec3f(0.0));
-    col = ACESFilm(col * 0.35);
-    
-    // Add film grain
-    let grain = (dot(hash23(vec3f(input.tex_uv * 1000.0, camera.time)), vec2f(1.0)) - 0.5) / 255.0;
-    
-    return vec4f(linearTosRGB(col) + grain, 1.0);
+    return vec4f(col, 1.0);
 }
