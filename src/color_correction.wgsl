@@ -10,20 +10,37 @@ fn ACESFilm(x: vec3<f32>) -> vec3<f32> {
     return clamp((x * (a * x + vec3<f32>(b))) / (x * (c * x + vec3<f32>(d)) + vec3<f32>(e)), vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
+fn lessThanEqual(a: vec3f, b: vec3f) -> vec3f {
+    var one = 0.0;
+    if a.x <= b.x { one = 1.0; } else { one = 0.0; };
+    var two = 0.0;
+    if a.y <= b.y { two = 1.0; } else { two = 0.0; };
+    var three = 0.0;
+    if a.z <= b.z { three = 1.0; } else { three = 0.0; };
+    return vec3f(one, two, three);
+}
+
+fn linearTosRGB(col: vec3f) -> vec3f {
+    return mix(
+        1.055 * pow(col, vec3f(1.0 / 2.4)) - 0.055,
+        col * 12.92,
+        vec3f(lessThanEqual(col, vec3f(0.0031308)))
+    );
+}
 
 fn tonemap(color: vec3<f32>) -> vec3<f32> {
     var c = color;
-    c = pow(c, vec3<f32>(1.5));
-    c = c / (1.0 + c);
-    c = pow(c, vec3<f32>(1.0 / 1.5));
-    c = mix(c, c * c * (3.0 - 2.0 * c), vec3<f32>(1.0));
-    c = pow(c, vec3<f32>(1.3, 1.20, 1.0));
-    c = pow(c, vec3<f32>(0.7 / 2.2));
+    // c = pow(c, vec3<f32>(1.5));
+    // c = c / (1.0 + c);
+    // c = pow(c, vec3<f32>(1.0 / 1.5));
+    // c = mix(c, c * c * (3.0 - 2.0 * c), vec3<f32>(1.0));
+    // c = pow(c, vec3<f32>(1.3, 1.20, 1.0));
+    // c = pow(c, vec3<f32>(0.7 / 2.2));
+    // c = ACESFilm(c * 0.35);
     c = ACESFilm(c);
-    
+    // c = linearTosRGB(c);
     return c;
 }
-
 
 // Vertex Shader: Full-screen quad
 @vertex

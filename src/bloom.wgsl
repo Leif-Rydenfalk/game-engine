@@ -27,6 +27,7 @@ fn prefilter_main(@builtin(global_invocation_id) id: vec3<u32>) {
             if (x + dx < scene_dims.x && y + dy < scene_dims.y) {
                 let texel = textureLoad(scene, vec2<i32>(i32(x + dx), i32(y + dy)), 0);
                 let brightness = dot(texel.rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
+                //  color += texel * brightness;
                 let factor = smoothstep(settings.min_brightness, settings.max_brightness, brightness);
                 color += texel * factor;
             }
@@ -173,7 +174,7 @@ fn composite_main(@builtin(global_invocation_id) id: vec3<u32>) {
     bloom += textureSampleBicubic(bloom7, bloom_sampler, uv).rgb * 1.0;
 
     // Add bloom to scene color
-    // color += bloom * 0.05;
+    // color += bloom * 0.5;
 
     // Write to output texture
     textureStore(output_tex, vec2<i32>(i32(id.x), i32(id.y)), vec4<f32>(color, 1.0));

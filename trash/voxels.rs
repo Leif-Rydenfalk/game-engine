@@ -1,4 +1,4 @@
-use crate::vertex::{create_vertex_buffer_layout, INDICES_SQUARE_REVERSED, VERTICES_SQUARE};
+use crate::vertex::{create_vertex_buffer_layout, INDICES_SQUARE, VERTICES_SQUARE};
 use crate::{
     BloomEffect, ColorCorrectionEffect, ColorCorrectionUniform, Model, ModelInstance, RgbaImg,
     Transform,
@@ -127,7 +127,7 @@ impl<'window> WgpuCtx<'window> {
         });
         let vertex_index_buffer = device.create_buffer_init(&BufferInitDescriptor {
             label: None,
-            contents: bytemuck::cast_slice(&INDICES_SQUARE_REVERSED),
+            contents: bytemuck::cast_slice(&INDICES_SQUARE),
             usage: wgpu::BufferUsages::INDEX,
         });
 
@@ -725,7 +725,7 @@ impl<'window> WgpuCtx<'window> {
                 self.vertex_index_buffer.slice(..),
                 wgpu::IndexFormat::Uint16,
             );
-            rpass.draw_indexed(0..INDICES_SQUARE_REVERSED.len() as u32, 0, 0..1);
+            rpass.draw_indexed(0..INDICES_SQUARE.len() as u32, 0, 0..1);
         }
 
         // Apply post-processing effects

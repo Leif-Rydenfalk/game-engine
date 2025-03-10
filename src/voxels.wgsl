@@ -58,16 +58,6 @@ struct HitInfo {
     i: i32,
 };
 // Utility Functions
-fn lessThanEqual(a: vec3f, b: vec3f) -> vec3f {
-    var one = 0.0;
-    if a.x <= b.x { one = 1.0; } else { one = 0.0; };
-    var two = 0.0;
-    if a.y <= b.y { two = 1.0; } else { two = 0.0; };
-    var three = 0.0;
-    if a.z <= b.z { three = 1.0; } else { three = 0.0; };
-    return vec3f(one, two, three);
-}
-// Fixed: Added missing * operators
 fn smin(d1: f32, d2: f32, k: f32) -> f32 {
     let h = clamp(0.5 + 0.5 * (d2 - d1) / k, 0.0, 1.0);
     return mix(d2, d1, h) - k * h * (1.0 - h);
@@ -123,7 +113,7 @@ fn map(p: vec3f) -> f32 {
     let camera_pos = camera.camera_position;
     let camera_distance = length(p - camera_pos);
     
-    // Combine with terrain using smooth minimum
+    // Remove terrain to close to the camera
     d = smax(d, MIN_DIST - camera_distance, 0.3);
     
     return d;
@@ -282,25 +272,12 @@ fn getSky(rd: vec3f) -> vec3f {
     let sunCost = cos(0.52 * PI / 180.0);
     let cost = max(dot(rd, ldir), 0.0);
     let dist = cost - sunCost;
-    let bloom = max(1.0 / (0.02 - min(dist, 0.0) * 500.0), 0.0) * 0.02;
-    col += 10.0 * lcol * (smoothstep(0.0, 0.0001, dist) + bloom);
     return col;
 }
 fn ACESFilm(x: vec3f) -> vec3f {
     let a = 2.51; let b = 0.03; let c = 2.43; let d = 0.59; let e = 0.14;
     return clamp((x * (a * x + b)) / (x * (c * x + d) + e), vec3f(0.0), vec3f(1.0));
 }
-fn linearTosRGB(col: vec3f) -> vec3f {
-    return mix(
-        1.055 * pow(col, vec3f(1.0 / 2.4)) - 0.055,
-        col * 12.92,
-        vec3f(lessThanEqual(col, vec3f(0.0031308)))
-    );
-}
-<<<<<<< HEAD:src/voxels.wgsl
-=======
-
->>>>>>> a239e2810b11119650380408b9a9f93538103a33:trash/voxels.wgsl
 @vertex
 fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     let positions = array<vec2f, 4>(
@@ -318,10 +295,6 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     output.world_position = vec3f(0.0);
     return output;
 }
-<<<<<<< HEAD:src/voxels.wgsl
-=======
-
->>>>>>> a239e2810b11119650380408b9a9f93538103a33:trash/voxels.wgsl
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4f {
     let ro = camera.camera_position;
@@ -343,14 +316,6 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
         let pos = ro + rd * hit.t;
         let lod = clamp(log2(distance(ro, hit.id)) - 2.0, 0.0, 6.0);
         col = shade(pos, ldir, lod, hit);
-        
-        // let a = 0.0;
-        // let b = 0.2;
-        // let fog = (a / b) * exp(-(ro.y - WATER_HEIGHT) * b) *
-        //           (1.0 - exp(-t * rd.y * b)) / max(rd.y, EPS);
-        // let biome = getBiome(hit.id);
-        // let fogCol = mix(vec3f(0.5, 0.8, 1.0), vec3f(1.0, 0.85, 0.6), biome.x);
-        // col = mix(col, fogCol, clamp(fog, 0.0, 1.0));
     } else {
         col = getSky(rd);
         t = MAX_DIST;
@@ -426,10 +391,6 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
         }
     }
     
-    // Color correction
-    let cost = max(dot(rd, ldir), 0.0);
-    col += 0.12 * lcol * pow(cost, 6.0);
-    
     if SHOW_NORMALS {
         col = hit.n;
     }
@@ -438,11 +399,5 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
         col = vec3f(f32(hit.i) / f32(STEPS));
     }
     
-    col = max(col, vec3f(0.0));
-    col = ACESFilm(col * 0.35);
-    
-    // Add film grain
-    let grain = (dot(hash23(vec3f(input.tex_uv * 1000.0, camera.time)), vec2f(1.0)) - 0.5) / 255.0;
-    
-    return vec4f(linearTosRGB(col) + grain, 1.0);
+    return vec4f(col, 1.0);
 }
