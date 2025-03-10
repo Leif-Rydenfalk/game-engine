@@ -7,11 +7,12 @@ const TUNNEL_RADIUS: f32 = 1.1;
 const SURFACE_FACTOR: f32 = 0.42;
 const CAMERA_SPEED: f32 = -1.5;
 const CAMERA_TIME_OFFSET: f32 = 0.0;
-const VOXEL_LEVEL: i32 = 5; // Updated to match Shadertoy
-const VOXEL_SIZE: f32 = exp2(-f32(VOXEL_LEVEL)); // ≈ 0.03125
-const STEPS: i32 = 512;
-const MAX_DIST: f32 = 60.0;
-const EPS: f32 = 1e-4;
+const VOXEL_LEVEL: i32 = 6; 
+const VOXEL_SIZE: f32 = exp2(-f32(VOXEL_LEVEL)); 
+const STEPS: i32 = 512 * 2 * 2;
+const MAX_DIST: f32 = 600000.0;
+const MIN_DIST: f32 = VOXEL_SIZE;
+const EPS: f32 = 1e-5;
 const PI: f32 = 3.14159265359;
 const TAU: f32 = 6.28318530718;
 // Updated light color and direction to match Shadertoy
@@ -86,32 +87,45 @@ fn hash23(p: vec3f) -> vec2f {
     p3 += dot(p3, p3.yzx + 33.33);
     return fract((p3.xx + p3.yz) * p3.zy);
 }
-// Fixed: Added missing * operators
-fn getCameraPos(t: f32) -> vec3f {
-    let t_adj = t + CAMERA_TIME_OFFSET;
-    return vec3f(
-        (cos(t_adj * 0.35 * CAMERA_SPEED) + sin(t_adj * 0.25 * CAMERA_SPEED) * 0.5) * 0.55,
-        (sin(t_adj * 0.25 * CAMERA_SPEED) + cos(t_adj * 0.2 * CAMERA_SPEED) * 0.4) * 0.35,
-        t_adj * CAMERA_SPEED
-    );
+fn triplanarLod(p: vec3f, n: vec3f, k: f32, tex_index: i32, lod: f32) -> vec3f {
+    let n_pow = pow(abs(n), vec3f(k));
+    let n_norm = n_pow / dot(n_pow, vec3f(1.0));
+    var col = vec3f(0.0);
+    if (tex_index == 0) {
+        col = textureSampleLevel(noise0_texture, terrain_sampler, p.yz, lod).rgb * n_norm.x +
+              textureSampleLevel(noise0_texture, terrain_sampler, p.xz, lod).rgb * n_norm.y +
+              textureSampleLevel(noise0_texture, terrain_sampler, p.xy, lod).rgb * n_norm.z;
+    } else if (tex_index == 2) {
+        col = textureSampleLevel(grain_texture, terrain_sampler, p.yz, lod).rgb * n_norm.x +
+              textureSampleLevel(grain_texture, terrain_sampler, p.xz, lod).rgb * n_norm.y +
+              textureSampleLevel(grain_texture, terrain_sampler, p.xy, lod).rgb * n_norm.z;
+    } else if (tex_index == 3) {
+        col = textureSampleLevel(dirt_texture, terrain_sampler, p.yz, lod).rgb * n_norm.x +
+              textureSampleLevel(dirt_texture, terrain_sampler, p.xz, lod).rgb * n_norm.y +
+              textureSampleLevel(dirt_texture, terrain_sampler, p.xy, lod).rgb * n_norm.z;
+    }
+    return col;
 }
-// Fixed: Updated map function to match Shadertoy (including tp squaring)
+// Change 2: Modify the map function to use a sphere around the camera instead of a tunnel
 fn map(p: vec3f) -> f32 {
     var d: f32 = MAX_DIST;
     let sc: f32 = 0.3;
-    // Assuming noise1_texture is 32x32x32; adjust if different
+    // Terrain generation remains the same
     let q: vec3f = sc * p / 32.0 - vec3f(0.003, -0.006, 0.0);
     d = textureSample(noise1_texture, terrain_sampler, q * 1.0).r * 0.5;
     d += textureSample(noise1_texture, terrain_sampler, q * 2.0 + vec3f(0.3, 0.3, 0.3)).r * 0.25;
     d += textureSample(noise1_texture, terrain_sampler, q * 4.0 + vec3f(0.7, 0.7, 0.7)).r * 0.125;
     var tp = smoothstep(50.0, -6.0, p.y);
-    tp = tp * tp; // Added this line to match Shadertoy
-    // Fixed reversed equation to match Shadertoy
+    tp = tp * tp;
     d = (d/0.875 - SURFACE_FACTOR) / sc;
     d = smax(d, p.y - MAX_HEIGHT, 0.6);
-    let cam_pos = getCameraPos(p.z / CAMERA_SPEED - CAMERA_TIME_OFFSET);
-    let c = TUNNEL_RADIUS - length(p.xy - cam_pos.xy);
-    d = smax(d, c, 0.75);
+
+    let camera_pos = camera.camera_position;
+    let camera_distance = length(p - camera_pos);
+    
+    // Combine with terrain using smooth minimum
+    d = smax(d, MIN_DIST - camera_distance, 0.3);
+    
     return d;
 }
 fn grad(p: vec3f) -> vec3f {
@@ -125,6 +139,7 @@ fn grad(p: vec3f) -> vec3f {
 fn get_voxel_pos(p: vec3f, s: f32) -> vec3f {
     return (floor(p / s) + 0.5) * s;
 }
+
 fn trace(ro: vec3f, rd: vec3f, tmax: f32) -> HitInfo {
     let s = VOXEL_SIZE;
     let sd = s * sqrt(3.0);
@@ -168,7 +183,7 @@ fn trace(ro: vec3f, rd: vec3f, tmax: f32) -> HitInfo {
             }
             vpos += nrd * s;
             prd = nrd;
-            t = tF;
+            t = tF + EPS;
             vi += 1;
         }
         if t >= tmax || (rd.y > 0.0 && pos.y > MAX_HEIGHT) {
@@ -202,11 +217,11 @@ fn getBiome(pos: vec3f) -> vec2f {
     return vec2f(smoothstep(0.67, 0.672, desert), smoothstep(0.695, 0.7, snow));
 }
 fn getAlbedo(vpos: vec3f, gn: vec3f, lod: f32) -> vec3f {
-    var alb = vec3f(1.0) - triplanar(vpos * 0.08, gn, 4.0, 2);
+    var alb = vec3f(1.0) - triplanarLod(vpos * 0.08, gn, 4.0, 2, lod);
     alb *= alb;
-    var alb2 = vec3f(1.0) - triplanar(vpos * 0.08, gn, 4.0, 3);
+    var alb2 = vec3f(1.0) - triplanarLod(vpos * 0.08, gn, 4.0, 3, lod);
     alb2 *= alb2;
-    let k = triplanar(vpos * 0.0005, gn, 4.0, 0).r;
+    let k = triplanarLod(vpos * 0.0005, gn, 4.0, 0, 0.0).r;
     let wk = smoothstep(MAX_WATER_HEIGHT, MAX_WATER_HEIGHT + 0.5, vpos.y);
     let top = smoothstep(0.3, 0.7, gn.y);
     alb = alb * 0.95 * vec3f(1.0, 0.7, 0.65) + 0.05;
@@ -243,17 +258,30 @@ fn shade(pos: vec3f, ldir: vec3f, lod: f32, hit: HitInfo) -> vec3f {
     return col;
 }
 fn shade2(pos: vec3f, ldir: vec3f, lod: f32, hit: HitInfo) -> vec3f {
-    return shade(pos, ldir, lod, hit);
+    let vpos = hit.id;
+    let g = grad(vpos);
+    let gn = g / length(g);
+    let n = hit.n;
+    let dif = max(dot(n, ldir), 0.0);
+    
+    var col = getAlbedo(vpos, gn, lod);
+    let ao = smoothstep(-0.08, 0.04, map(pos) / length(grad(pos)));
+    let hao = smoothstep(WATER_HEIGHT - 12.0, WATER_HEIGHT, pos.y);
+    
+    col *= dot(abs(n), vec3f(0.8, 1.0, 0.9));
+    col *= (dif * 0.6 + 0.4) * lcol;
+    col *= ao * 0.6 + 0.4;
+    col *= hao * 0.6 + 0.4;
+    
+    return col;
 }
 fn getSky(rd: vec3f) -> vec3f {
     let skyCol = vec3f(0.353, 0.611, 1.0);
     let skyCol2 = vec3f(0.8, 0.9, 1.0);
     var col = mix(skyCol2, skyCol, smoothstep(0.0, 0.2, rd.y)) * 1.2;
-    // Fixed: Corrected sun angle calculation
     let sunCost = cos(0.52 * PI / 180.0);
     let cost = max(dot(rd, ldir), 0.0);
     let dist = cost - sunCost;
-    // Fixed: Added missing * operators
     let bloom = max(1.0 / (0.02 - min(dist, 0.0) * 500.0), 0.0) * 0.02;
     col += 10.0 * lcol * (smoothstep(0.0, 0.0001, dist) + bloom);
     return col;
@@ -269,7 +297,10 @@ fn linearTosRGB(col: vec3f) -> vec3f {
         vec3f(lessThanEqual(col, vec3f(0.0031308)))
     );
 }
-// Vertex Shader
+<<<<<<< HEAD:src/voxels.wgsl
+=======
+
+>>>>>>> a239e2810b11119650380408b9a9f93538103a33:trash/voxels.wgsl
 @vertex
 fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     let positions = array<vec2f, 4>(
@@ -287,107 +318,131 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     output.world_position = vec3f(0.0);
     return output;
 }
-// Fragment Shader
+<<<<<<< HEAD:src/voxels.wgsl
+=======
+
+>>>>>>> a239e2810b11119650380408b9a9f93538103a33:trash/voxels.wgsl
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4f {
-    let ro = getCameraPos(camera.time);
+    let ro = camera.camera_position;
     let ndc = vec4f(input.tex_uv * 2.0 - 1.0, 1.0, 1.0);
     let world_pos = camera.inv_view_proj * ndc;
     let rd = normalize(world_pos.xyz / world_pos.w - ro);
+    
     if VISUALIZE_DISTANCE_FIELD {
         let pos = ro + rd * 10.0;
         let d = map(pos);
         return vec4f(vec3f(d * 0.1 + 0.5), 1.0);
     }
+    
     let hit = trace(ro, rd, MAX_DIST);
     var col = vec3f(0.0);
-    var t = MAX_DIST;
+    var t = hit.t;
+    
     if hit.is_hit {
         let pos = ro + rd * hit.t;
         let lod = clamp(log2(distance(ro, hit.id)) - 2.0, 0.0, 6.0);
         col = shade(pos, ldir, lod, hit);
-        t = hit.t;
-        let a = 0.012;
-        let b = 0.08;
-        let fog = (a / b) * exp(-(ro.y - WATER_HEIGHT) * b) *
-                  (1.0 - exp(-t * rd.y * b)) / max(rd.y, EPS);
-        let biome = getBiome(hit.id);
-        // Fog colors to match Shadertoy
-        let fogCol = mix(vec3f(0.5, 0.8, 1.0), vec3f(1.0, 0.85, 0.6), biome.x);
-        col = mix(col, fogCol, clamp(fog, 0.0, 1.0));
+        
+        // let a = 0.0;
+        // let b = 0.2;
+        // let fog = (a / b) * exp(-(ro.y - WATER_HEIGHT) * b) *
+        //           (1.0 - exp(-t * rd.y * b)) / max(rd.y, EPS);
+        // let biome = getBiome(hit.id);
+        // let fogCol = mix(vec3f(0.5, 0.8, 1.0), vec3f(1.0, 0.85, 0.6), biome.x);
+        // col = mix(col, fogCol, clamp(fog, 0.0, 1.0));
     } else {
         col = getSky(rd);
+        t = MAX_DIST;
     }
+    
     let pt = -(ro.y - WATER_HEIGHT) / rd.y;
-    if pt > 0.0 && (pt < t || ro.y < WATER_HEIGHT) {
-        let wpos = ro + rd * pt;
+    if ((pt > 0.0 && pt < t)) || ro.y < WATER_HEIGHT {
         if !hit.is_hit {
-            let biome = getBiome(wpos);
+            let biome = getBiome(ro + rd * pt);
             col = mix(vec3f(0.5, 0.8, 1.0), vec3f(1.0, 0.85, 0.6), biome.x);
         }
-        let biome = getBiome(wpos);
-        var wcol = vec3f(0.5, 1.0, 1.0);
-        wcol = mix(wcol, vec3f(0.5, 1.0, 0.9), biome.x);
-        wcol = mix(wcol, vec3f(0.2, 0.8, 1.0), biome.y);
-        let wabs = vec3f(0.15, 0.8, 1.0);
-        // Fixed: Added missing * operators
+        
+        let biome = getBiome(ro + rd * pt);
+        var wcol = vec3f(0.3, 0.8, 1.0);
+        wcol = mix(wcol, vec3f(0.4, 0.9, 0.8), biome.x);
+        wcol = mix(wcol, vec3f(0.1, 0.7, 0.9), biome.y);
+        
+        let wabs = vec3f(0.1, 0.7, 0.9);
+        
+        var adjusted_pt = pt;
+        if (ro.y < WATER_HEIGHT && pt < 0.0) {
+            adjusted_pt = MAX_DIST;
+        }
+        
+        let wpos = ro + rd * adjusted_pt;
+        
+        let e = 0.001;
+        let wnstr = 1500.0;
         let wo = vec2f(1.0, 0.8) * camera.time * 0.01;
         let wuv = wpos.xz * 0.08 + wo;
-        let e = 0.001;
         let wh = textureSample(grain_texture, terrain_sampler, wuv).r;
         let whdx = textureSample(grain_texture, terrain_sampler, wuv + vec2f(e, 0.0)).r;
         let whdy = textureSample(grain_texture, terrain_sampler, wuv + vec2f(0.0, e)).r;
-        let wn = normalize(vec3f(wh - whdx, e * 1500.0, wh - whdy));
+        let wn = normalize(vec3f(wh - whdx, e * wnstr, wh - whdy));
         let wref = reflect(rd, wn);
+        
         var rcol = vec3f(0.0);
-        if ro.y > WATER_HEIGHT {
+        if (ro.y > WATER_HEIGHT) {
             let hitR = trace(wpos + vec3f(0.0, 0.01, 0.0), wref, 15.0);
-            let lod = clamp(log2(distance(wpos, hitR.id)) - 2.0, 0.0, 6.0);
-            if hitR.is_hit {
-                rcol = shade2(wpos + wref * hitR.t, ldir, lod, hitR);
+            let lod = clamp(log2(distance(ro, hitR.id)) - 2.0, 0.0, 6.0);
+            
+            if (hitR.is_hit) {
+                rcol = shade2(wpos, ldir, lod, hitR);
             } else {
                 rcol = getSky(wref);
             }
         }
+        
+        // Specular highlight
         let spec = pow(max(dot(wref, ldir), 0.0), 50.0);
-        // Updated Fresnel calculation to match Shadertoy
-        let fre = 0.35 + 0.65 * pow(max(dot(rd, wn), 0.0), 5.0);
-        let fre_adj = select(fre, 0.0, rd.y < 0.0 && ro.y < WATER_HEIGHT);
+        
+        // Fresnel reflection factor
+        let r0 = 0.35;
+        var fre = r0 + (1.0 - r0) * pow(max(dot(rd, wn), 0.0), 5.0);
+        
+        if (rd.y < 0.0 && ro.y < WATER_HEIGHT) {
+            fre = 0.0;
+        }
+        
+        // Water absorption
         let abt = select(t - pt, min(t, pt), ro.y < WATER_HEIGHT);
-        // Fixed: Added missing * operators
-        col *= exp(-abt * (1.0 - wabs) * 0.08);
-        if pt < t {
-            col = mix(col, wcol * (rcol + vec3f(spec)), fre_adj);
-            // Fixed: Added missing * operators for foam effect
+        col *= exp(-abt * (1.0 - wabs) * 0.1);
+        
+        if (pt < t) {
+            col = mix(col, wcol * (rcol + spec), fre);
+            
+            // Foam effect
             let wp = wpos + wn * vec3f(1.0, 0.0, 1.0) * 0.2;
             let wd = map(wp) / length(grad(wp));
-            let foam = smoothstep(0.22, 0.0, wd +
-                          sin((wd - camera.time * 0.03) * 60.0) * 0.03 +
-                          (wh - 0.5) * 0.12);
-            col = mix(col, col + vec3f(1.0), foam * 0.4);
+            let foam = sin((wd - camera.time * 0.03) * 60.0);
+            let foam_mask = smoothstep(0.22, 0.0, wd + foam * 0.03 + (wh - 0.5) * 0.12);
+            col = mix(col, col + vec3f(1.0), foam_mask * 0.4);
         }
     }
-    // --- Begin Color Correction (matching Shadertoy) ---
-    // First, add a boost based on the light dot
-    let cost: f32 = max(dot(rd, ldir), 0.0);
-    // Fixed: Added missing * operators
-    col = col + 0.12 * lcol * pow(cost, 6.0);
     
-    // Optionally override with debug visualizations:
+    // Color correction
+    let cost = max(dot(rd, ldir), 0.0);
+    col += 0.12 * lcol * pow(cost, 6.0);
+    
     if SHOW_NORMALS {
-        col = hit.n;  // Use the raw normal as in Shadertoy
+        col = hit.n;
     }
+    
     if SHOW_STEPS {
         col = vec3f(f32(hit.i) / f32(STEPS));
     }
     
-    // Clamp to nonnegative values and apply ACES filmic tone mapping (matching Shadertoy)
     col = max(col, vec3f(0.0));
     col = ACESFilm(col * 0.35);
     
-    // Add film grain like in Shadertoy
+    // Add film grain
     let grain = (dot(hash23(vec3f(input.tex_uv * 1000.0, camera.time)), vec2f(1.0)) - 0.5) / 255.0;
     
-    // --- End Color Correction ---
     return vec4f(linearTosRGB(col) + grain, 1.0);
 }

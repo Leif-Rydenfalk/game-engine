@@ -53,6 +53,6 @@ fn fs_main(@builtin(position) frag_coord: vec4<f32>) -> @location(0) vec4<f32> {
     let dims = textureDimensions(input_texture);
     let tex_coord = frag_coord.xy / vec2<f32>(f32(dims.x), f32(dims.y));
     var color = textureSample(input_texture, input_sampler, tex_coord);
-    // color = vec4(tonemap(color.rgb), 1.0);
+    color = vec4(tonemap(color.rgb), 1.0);
     return color;
 }
