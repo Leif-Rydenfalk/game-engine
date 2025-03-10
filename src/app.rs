@@ -101,7 +101,7 @@ impl<'window> ApplicationHandler for App<'window> {
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                let imgui = self.wgpu_ctx.as_mut().unwrap().imgui.as_mut().unwrap();
+                let imgui = &mut self.wgpu_ctx.as_mut().unwrap().imgui;
                 let io = imgui.context.io();
                 
                 // Only process keyboard input if ImGui isn't capturing it
@@ -154,7 +154,7 @@ impl<'window> ApplicationHandler for App<'window> {
                 self.input_system.update();
             }
             WindowEvent::MouseInput { button, state, .. } => {
-                let imgui = self.wgpu_ctx.as_mut().unwrap().imgui.as_mut().unwrap();
+                let imgui = &mut self.wgpu_ctx.as_mut().unwrap().imgui;
                 let io = imgui.context.io();
                 
                 if !io.want_capture_mouse {
@@ -163,7 +163,7 @@ impl<'window> ApplicationHandler for App<'window> {
             }
             
             WindowEvent::CursorMoved { position, .. } => {
-                let imgui = self.wgpu_ctx.as_mut().unwrap().imgui.as_mut().unwrap();
+                let imgui = &mut self.wgpu_ctx.as_mut().unwrap().imgui;
                 let io = imgui.context.io();
                 
                 if !io.want_capture_mouse {
@@ -182,8 +182,7 @@ impl<'window> ApplicationHandler for App<'window> {
         }
 
         let window = self.window.as_mut().unwrap();
-        let imgui = self.wgpu_ctx.as_mut().unwrap().imgui.as_mut().unwrap();
-
+        let imgui = &mut self.wgpu_ctx.as_mut().unwrap().imgui;
         imgui.platform.handle_event::<()>(
             imgui.context.io_mut(),
             &window,
@@ -202,7 +201,7 @@ impl<'window> ApplicationHandler for App<'window> {
         }
 
         let window = self.window.as_mut().unwrap();
-        let imgui = self.wgpu_ctx.as_mut().unwrap().imgui.as_mut().unwrap();
+        let imgui = &mut self.wgpu_ctx.as_mut().unwrap().imgui;
         imgui.platform.handle_event::<()>(
             imgui.context.io_mut(),
             &window,
@@ -212,7 +211,7 @@ impl<'window> ApplicationHandler for App<'window> {
 
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: ()) {
         let window = self.window.as_mut().unwrap();
-        let imgui = self.wgpu_ctx.as_mut().unwrap().imgui.as_mut().unwrap();
+        let imgui = &mut self.wgpu_ctx.as_mut().unwrap().imgui;
         imgui.platform.handle_event::<()>(
             imgui.context.io_mut(),
             &window,
@@ -223,7 +222,7 @@ impl<'window> ApplicationHandler for App<'window> {
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
         let window = self.window.as_mut().unwrap();
-        let imgui = self.wgpu_ctx.as_mut().unwrap().imgui.as_mut().unwrap();
+        let imgui = &mut self.wgpu_ctx.as_mut().unwrap().imgui;
         window.request_redraw();
         imgui.platform.handle_event::<()>(
             imgui.context.io_mut(),

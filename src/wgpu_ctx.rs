@@ -14,7 +14,97 @@ use winit::window::Window;
 use imgui::*;
 use imgui_wgpu::{Renderer, RendererConfig};
 use imgui_winit_support::WinitPlatform;
-use pollster::block_on;
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct VoxelSettings {
+    // Constants from shader
+    pub max: f32,
+    pub r_inner: f32,
+    pub r: f32,
+    pub max_height: f32,
+    pub max_water_height: f32,
+    pub water_height: f32,
+    pub tunnel_radius: f32,
+    pub surface_factor: f32,
+    pub camera_speed: f32,
+    pub camera_time_offset: f32,
+    pub voxel_level: i32,
+    pub voxel_size: f32,
+    pub steps: i32,
+    pub max_dist: f32,
+    pub min_dist: f32,
+    pub eps: f32,
+
+    // Light settings
+    pub light_color: [f32; 4],     // Using vec4 for alignment
+    pub light_direction: [f32; 4], // Using vec4 for alignment
+
+    // Debug flags (using i32 as bools for uniform compatibility)
+    pub show_normals: i32,
+    pub show_steps: i32,
+    pub visualize_distance_field: i32,
+
+    _padding: u32,
+    // // Padding to ensure 16-byte alignment
+    // _padding: [u8; 8],
+    // _padding: u32,
+    // _padding2: u8
+}
+
+impl Default for VoxelSettings {
+    fn default() -> Self {
+        // Calculate voxel_size based on voxel_level for consistency
+        let voxel_level = 3;
+        let voxel_size = 2.0f32.powf(-voxel_level as f32);
+
+        Self {
+            max: 10000.0,
+            r_inner: 1.0,
+            r: 1.0 + 0.8, // R_INNER + 0.8
+            max_height: 5.0,
+            max_water_height: -2.2,
+            water_height: -2.2, // Same as MAX_WATER_HEIGHT
+            tunnel_radius: 1.1,
+            surface_factor: 0.42,
+            camera_speed: -1.5,
+            camera_time_offset: 0.0,
+            voxel_level,
+            voxel_size,
+            steps: 512 * 2 * 2,
+            max_dist: 600000.0,
+            min_dist: 0.0001,
+            eps: 1e-5,
+
+            // Light settings - converted to arrays for uniform compatibility
+            light_color: [1.0, 0.9, 0.75, 2.0], // vec3f(1.0, 0.9, 0.75) * 2.0
+            light_direction: [0.507746, 0.716817, 0.477878, 0.0], // Normalized in shader
+
+            // Debug flags
+            show_normals: 0,             // false
+            show_steps: 0,               // false
+            visualize_distance_field: 0, // false
+
+            // _padding: [0; 8],
+            _padding: 0,
+        }
+    }
+}
+
+impl VoxelSettings {
+    pub fn update_voxel_size(&mut self) {
+        self.voxel_size = 2.0f32.powf(-self.voxel_level as f32);
+    }
+
+    // Create buffer from settings
+    pub fn create_buffer(&self, device: &wgpu::Device) -> wgpu::Buffer {
+        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Voxel Settings Buffer"),
+            contents: bytemuck::cast_slice(&[*self]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        })
+    }
+}
 
 pub struct ImguiState {
     pub context: imgui::Context,
@@ -70,7 +160,10 @@ pub struct WgpuCtx<'window> {
     terrain_bind_group: wgpu::BindGroup,
     time: Instant,
     hidpi_factor: f64,
-    pub imgui: Option<ImguiState>,
+    pub imgui: ImguiState,
+    voxel_settings: VoxelSettings,
+    voxel_settings_buffer: wgpu::Buffer,
+    voxel_settings_bind_group: wgpu::BindGroup,
 }
 
 impl<'window> WgpuCtx<'window> {
@@ -125,6 +218,7 @@ impl<'window> WgpuCtx<'window> {
             )
             .await
             .expect("Failed to create device");
+
         let device = Arc::new(device);
         let queue = Arc::new(queue);
 
@@ -412,6 +506,38 @@ impl<'window> WgpuCtx<'window> {
             label: Some("terrain_bind_group"),
         });
 
+        // Create the bind group layout
+        let voxel_settings_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Voxel Settings Bind Group Layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT, //  | wgpu::ShaderStages::VERTEX  | wgpu::ShaderStages::COMPUTE
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
+
+        // Create the default settings
+        let voxel_settings = VoxelSettings::default();
+
+        // Create the buffer
+        let voxel_settings_buffer = voxel_settings.create_buffer(&device);
+
+        // Create the bind group
+        let voxel_settings_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Voxel Settings Bind Group"),
+            layout: &voxel_settings_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: voxel_settings_buffer.as_entire_binding(),
+            }],
+        });
+
         // Camera uniform and bind group
         let camera_uniform = CameraUniform {
             view_proj: Matrix4::identity().into(),
@@ -449,7 +575,11 @@ impl<'window> WgpuCtx<'window> {
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: None,
-                bind_group_layouts: &[&camera_bind_group_layout, &terrain_bind_group_layout],
+                bind_group_layouts: &[
+                    &camera_bind_group_layout,
+                    &terrain_bind_group_layout,
+                    &voxel_settings_bind_group_layout,
+                ],
                 push_constant_ranges: &[],
             });
         let render_pipeline = create_pipeline(
@@ -644,8 +774,11 @@ impl<'window> WgpuCtx<'window> {
             terrain_bind_group_layout,
             terrain_bind_group,
             time: Instant::now(),
-            imgui: Some(imgui),
+            imgui,
             hidpi_factor,
+            voxel_settings,
+            voxel_settings_buffer,
+            voxel_settings_bind_group,
         }
     }
 
@@ -792,6 +925,7 @@ impl<'window> WgpuCtx<'window> {
             rpass.set_pipeline(&self.render_pipeline);
             rpass.set_bind_group(0, &self.camera_bind_group, &[]);
             rpass.set_bind_group(1, &self.terrain_bind_group, &[]);
+            rpass.set_bind_group(2, &self.voxel_settings_bind_group, &[]);
             rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             rpass.set_index_buffer(
                 self.vertex_index_buffer.slice(..),
@@ -817,82 +951,91 @@ impl<'window> WgpuCtx<'window> {
         self.color_correction_effect
             .apply(&mut encoder, &surface_texture_view);
 
-        // Render ImGui if available
-        if let Some(imgui) = &mut self.imgui {
-            // Setup UI first
-            // Update time delta
-            let now = Instant::now();
-            imgui
-                .context
-                .io_mut()
-                .update_delta_time(now - imgui.last_frame);
-            imgui.last_frame = now;
+        // Setup UI first
+        // Update time delta
+        let now = Instant::now();
+        self.imgui
+            .context
+            .io_mut()
+            .update_delta_time(now - self.imgui.last_frame);
+        self.imgui.last_frame = now;
 
-            // Prepare frame
-            imgui
-                .platform
-                .prepare_frame(imgui.context.io_mut(), window)
-                .expect("Failed to prepare ImGui frame");
-            let ui = imgui.context.frame();
+        // Prepare frame
+        self.imgui
+            .platform
+            .prepare_frame(self.imgui.context.io_mut(), window)
+            .expect("Failed to prepare ImGui frame");
+        let ui = self.imgui.context.frame();
 
-            // Build your UI here
-            {
-                let window = ui.window("Voxel Settings");
-                window
-                    .size([300.0, 200.0], Condition::FirstUseEver)
-                    .build(|| {
-                        // Add buttons to test mouse capture
-                        if ui.button("Test Button") {
-                            println!("ImGui button clicked!");
-                        }
-                        
-                        // Add input field to test keyboard capture
-                        let mut test_input = String::new();
-                        ui.input_text("Test Input", &mut test_input).build();
-                        
-                        // Debug info
-                        ui.text(format!(
-                            "ImGui wants capture: Mouse={}, Keyboard={}", 
-                            ui.io().want_capture_mouse, 
-                            ui.io().want_capture_keyboard
-                        ));
-                        ui.separator();
-                    });
+        // Build your UI here
+        {
+            let mut modified = false;
+            let window = ui.window("Voxel Settings");
+            window
+                .size([300.0, 200.0], Condition::FirstUseEver)
+                .build(|| {
+                    if ui.slider("Voxel Level", 1, 10, &mut self.voxel_settings.voxel_level) {
+                        self.voxel_settings.update_voxel_size();
+                        modified = true;
+                    }
+                    // // Add buttons to test mouse capture
+                    // if ui.button("Test Button") {
+                    //     println!("ImGui button clicked!");
+                    // }
 
-                // Show demo window (useful while developing)
-                ui.show_demo_window(&mut imgui.demo_open);
+                    // // Add input field to test keyboard capture
+                    // let mut test_input = String::new();
+                    // ui.input_text("Test Input", &mut test_input).build();
+
+                    // // Debug info
+                    // ui.text(format!(
+                    //     "ImGui wants capture: Mouse={}, Keyboard={}",
+                    //     ui.io().want_capture_mouse,
+                    //     ui.io().want_capture_keyboard
+                    // ));
+                    // ui.separator();
+                });
+            // // Show demo window (useful while developing)
+            // ui.show_demo_window(&mut imgui.demo_open);
+
+            if modified {
+                self.queue.write_buffer(
+                    &self.voxel_settings_buffer,
+                    0,
+                    bytemuck::cast_slice(&[self.voxel_settings]),
+                );
             }
-
-            // Update cursor if changed
-            if imgui.last_cursor != ui.mouse_cursor() {
-                imgui.last_cursor = ui.mouse_cursor();
-                imgui.platform.prepare_render(ui, window);
-            }
-
-            // Render ImGui UI on top of the scene
-            imgui
-                .renderer
-                .render(
-                    imgui.context.render(),
-                    &self.queue,
-                    &self.device,
-                    &mut encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("ImGui Render Pass"),
-                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view: &surface_texture_view,
-                            resolve_target: None,
-                            ops: wgpu::Operations {
-                                load: wgpu::LoadOp::Load, // Important: Load existing content
-                                store: wgpu::StoreOp::Store,
-                            },
-                        })],
-                        depth_stencil_attachment: None,
-                        timestamp_writes: None,
-                        occlusion_query_set: None,
-                    }),
-                )
-                .expect("ImGui rendering failed");
         }
+
+        // Update cursor if changed
+        if self.imgui.last_cursor != ui.mouse_cursor() {
+            self.imgui.last_cursor = ui.mouse_cursor();
+            self.imgui.platform.prepare_render(ui, window);
+        }
+
+        // Render ImGui UI on top of the scene
+        self.imgui
+            .renderer
+            .render(
+                self.imgui.context.render(),
+                &self.queue,
+                &self.device,
+                &mut encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("ImGui Render Pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &surface_texture_view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load, // Important: Load existing content
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                }),
+            )
+            .expect("ImGui rendering failed");
 
         self.queue.submit(Some(encoder.finish()));
         surface_texture.present();
