@@ -17,3 +17,4 @@ gltf = "1.4"
 imgui-wgpu = { path = "lib/imgui-wgpu-rs" }
 imgui = "0.12"
 imgui-winit-support = "0.13"
+rustfft = "6.1.0"
