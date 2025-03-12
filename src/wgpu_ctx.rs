@@ -974,7 +974,7 @@ impl<'window> WgpuCtx<'window> {
             window
                 .size([300.0, 200.0], Condition::FirstUseEver)
                 .build(|| {
-                    if ui.slider("Voxel Level", 1, 7, &mut self.voxel_settings.voxel_level) {
+                    if ui.slider("Voxel Level", 1, 8, &mut self.voxel_settings.voxel_level) {
                         self.voxel_settings.update_voxel_size();
                         modified = true;
                     }
