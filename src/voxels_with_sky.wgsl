@@ -149,11 +149,12 @@ struct Settings {
 
 @group(0) @binding(0) var<uniform> camera: CameraUniform;
 @group(1) @binding(0) var rgb_noise_texture: texture_2d<f32>;
-@group(1) @binding(1) var gray_cube_noise_texture: texture_3d<f32>; 
-@group(1) @binding(2) var grain_texture: texture_2d<f32>; 
-@group(1) @binding(3) var dirt_texture: texture_2d<f32>;  
-@group(1) @binding(4) var pebble_texture: texture_2d<f32>;  
-@group(1) @binding(5) var terrain_sampler: sampler; // Must use repeat mode
+@group(1) @binding(1) var gray_noise_texture: texture_2d<f32>;
+@group(1) @binding(2) var gray_cube_noise_texture: texture_3d<f32>; 
+@group(1) @binding(3) var grain_texture: texture_2d<f32>; 
+@group(1) @binding(4) var dirt_texture: texture_2d<f32>;  
+@group(1) @binding(5) var pebble_texture: texture_2d<f32>;  
+@group(1) @binding(6) var terrain_sampler: sampler; // Must use repeat mode
 @group(2) @binding(0) var<uniform> settings: Settings;
 
 struct CameraUniform {

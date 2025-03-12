@@ -304,7 +304,6 @@ impl<'window> WgpuCtx<'window> {
         let rgb_noise_texture_view =
             rgb_noise_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-
         let gray_noise_img = RgbaImg::new("./assets/images/textures/graynoise.png").unwrap();
         let gray_noise_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Gray noise Texture"),
@@ -340,8 +339,7 @@ impl<'window> WgpuCtx<'window> {
             },
         );
         let gray_noise_texture_view =
-        gray_noise_texture.create_view(&wgpu::TextureViewDescriptor::default());
-
+            gray_noise_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         // Gray noise cube texture (3D)
         let gray_noise_cube_full =
@@ -393,7 +391,7 @@ impl<'window> WgpuCtx<'window> {
             gray_noise_cube_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         // Grain texture
-        let grain_img = RgbaImg::new("./assets/images/textures/stone.png").unwrap();
+        let grain_img = RgbaImg::new("./assets/images/textures/grain.png").unwrap();
         let grain_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Grain Texture"),
             size: wgpu::Extent3d {
@@ -1091,9 +1089,18 @@ impl<'window> WgpuCtx<'window> {
                             world
                                 .query_mut::<(&mut Transform, &mut Camera, &mut CameraController)>()
                         {
-                            transform.position = Point3::new(0.0, 0.0, 0.0);
+                            transform.position = Point3::new(6.0, 2.2, 6.0);
                         }
                     }
+                    for (_, (transform, camera, controller)) in
+                        world.query_mut::<(&mut Transform, &mut Camera, &mut CameraController)>()
+                    {
+                        let mut pos: [f32; 3] = transform.position.into();
+                        if ui.input_float3("Camera Transform", &mut pos).build() {
+                            transform.position = pos.into();
+                        }
+                    }
+
                     if ui.slider("Voxel Level", 1, 8, &mut self.voxel_settings.voxel_level) {
                         self.voxel_settings.update_voxel_size();
                         modified = true;
