@@ -1,9 +1,9 @@
 use crate::vertex::{create_vertex_buffer_layout, INDICES_SQUARE, VERTICES_SQUARE};
 use crate::{
-    BloomEffect, ColorCorrectionEffect, ColorCorrectionUniform, Model, ModelInstance, RgbaImg,
-    Transform,
+    BloomEffect, Camera, CameraController, ColorCorrectionEffect, ColorCorrectionUniform, Model,
+    ModelInstance, RgbaImg, Transform,
 };
-use cgmath::{Matrix4, SquareMatrix};
+use cgmath::{Matrix4, Point3, SquareMatrix};
 use hecs::World;
 use std::borrow::Cow;
 use std::{path::Path, sync::Arc, time::Instant};
@@ -881,7 +881,7 @@ impl<'window> WgpuCtx<'window> {
     }
 
     /// Renders the scene with post-processing effects
-    pub fn draw(&mut self, world: &World, window: &Window) {
+    pub fn draw(&mut self, world: &mut World, window: &Window) {
         let surface_texture = self
             .surface
             .get_current_texture()
@@ -970,18 +970,43 @@ impl<'window> WgpuCtx<'window> {
         // Build your UI here
         {
             let mut modified = false;
-            let window = ui.window("Voxel Settings");
+            let window = ui.window("Settings");
             window
                 .size([300.0, 200.0], Condition::FirstUseEver)
+                .always_auto_resize(true)
                 .build(|| {
+                    if ui.button("Set Camera Position Origin") {
+                        for (_, (transform, camera, controller)) in
+                            world
+                                .query_mut::<(&mut Transform, &mut Camera, &mut CameraController)>()
+                        {
+                            transform.position = Point3::new(0.0, 0.0, 0.0);
+                        }
+                    }
                     if ui.slider("Voxel Level", 1, 8, &mut self.voxel_settings.voxel_level) {
                         self.voxel_settings.update_voxel_size();
                         modified = true;
                     }
-                    // // Add buttons to test mouse capture
-                    // if ui.button("Test Button") {
-                    //     println!("ImGui button clicked!");
-                    // }
+                    if ui
+                        .input_float("Max Ray Distance", &mut self.voxel_settings.max_dist)
+                        .build()
+                    {
+                        modified = true;
+                    }
+
+                    if ui
+                        .input_float("Water Height", &mut self.voxel_settings.water_height)
+                        .build()
+                    {
+                        self.voxel_settings.max_water_height = self.voxel_settings.water_height;
+                        modified = true;
+                    }
+                    if ui
+                        .input_float("Max terrain Height", &mut self.voxel_settings.max_height)
+                        .build()
+                    {
+                        modified = true;
+                    }
 
                     // // Add input field to test keyboard capture
                     // let mut test_input = String::new();
