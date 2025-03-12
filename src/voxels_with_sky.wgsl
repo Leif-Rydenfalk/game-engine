@@ -145,15 +145,15 @@ struct Settings {
     visualize_distance_field: i32,
 
     _padding: i32,
-    // _padding2: i32,
 };
 
 @group(0) @binding(0) var<uniform> camera: CameraUniform;
-@group(1) @binding(0) var noise0_texture: texture_2d<f32>; // iChannel0
-@group(1) @binding(1) var noise1_texture: texture_3d<f32>; // iChannel1
-@group(1) @binding(2) var grain_texture: texture_2d<f32>;  // iChannel2
-@group(1) @binding(3) var dirt_texture: texture_2d<f32>;   // iChannel3
-@group(1) @binding(4) var terrain_sampler: sampler; // Must use repeat mode
+@group(1) @binding(0) var rgb_noise_texture: texture_2d<f32>;
+@group(1) @binding(1) var gray_cube_noise_texture: texture_3d<f32>; 
+@group(1) @binding(2) var grain_texture: texture_2d<f32>; 
+@group(1) @binding(3) var dirt_texture: texture_2d<f32>;  
+@group(1) @binding(4) var pebble_texture: texture_2d<f32>;  
+@group(1) @binding(5) var terrain_sampler: sampler; // Must use repeat mode
 @group(2) @binding(0) var<uniform> settings: Settings;
 
 struct CameraUniform {
@@ -214,7 +214,7 @@ fn triplanarLod(p: vec3f, n: vec3f, k: f32, tex_index: i32, lod: f32) -> vec3f {
     let n_norm = n_pow / dot(n_pow, vec3f(1.0));
     var col = vec3f(0.0);
     if tex_index == 0 {
-        col = textureSampleLevel(noise0_texture, terrain_sampler, p.yz, lod).rgb * n_norm.x + textureSampleLevel(noise0_texture, terrain_sampler, p.xz, lod).rgb * n_norm.y + textureSampleLevel(noise0_texture, terrain_sampler, p.xy, lod).rgb * n_norm.z;
+        col = textureSampleLevel(rgb_noise_texture, terrain_sampler, p.yz, lod).rgb * n_norm.x + textureSampleLevel(rgb_noise_texture, terrain_sampler, p.xz, lod).rgb * n_norm.y + textureSampleLevel(rgb_noise_texture, terrain_sampler, p.xy, lod).rgb * n_norm.z;
     } else if tex_index == 2 {
         col = textureSampleLevel(grain_texture, terrain_sampler, p.yz, lod).rgb * n_norm.x + textureSampleLevel(grain_texture, terrain_sampler, p.xz, lod).rgb * n_norm.y + textureSampleLevel(grain_texture, terrain_sampler, p.xy, lod).rgb * n_norm.z;
     } else if tex_index == 3 {
@@ -228,9 +228,9 @@ fn map(p: vec3f) -> f32 {
     let sc: f32 = 0.3;
     // Terrain generation remains the same
     let q: vec3f = sc * p / 32.0 - vec3f(0.003, -0.006, 0.0);
-    d = textureSample(noise1_texture, terrain_sampler, q * 1.0).r * 0.5;
-    d += textureSample(noise1_texture, terrain_sampler, q * 2.0 + vec3f(0.3, 0.3, 0.3)).r * 0.25;
-    d += textureSample(noise1_texture, terrain_sampler, q * 4.0 + vec3f(0.7, 0.7, 0.7)).r * 0.125;
+    d = textureSample(gray_cube_noise_texture, terrain_sampler, q * 1.0).r * 0.5;
+    d += textureSample(gray_cube_noise_texture, terrain_sampler, q * 2.0 + vec3f(0.3, 0.3, 0.3)).r * 0.25;
+    d += textureSample(gray_cube_noise_texture, terrain_sampler, q * 4.0 + vec3f(0.7, 0.7, 0.7)).r * 0.125;
     var tp = smoothstep(50.0, -6.0, p.y);
     tp = tp * tp;
     d = (d / 0.875 - settings.surface_factor) / sc;
@@ -316,7 +316,7 @@ fn triplanar(p: vec3f, n: vec3f, k: f32, tex_index: i32) -> vec3f {
     let n_norm = n_pow / dot(n_pow, vec3f(1.0));
     var col = vec3f(0.0);
     if tex_index == 0 {
-        col = textureSample(noise0_texture, terrain_sampler, p.yz).rgb * n_norm.x + textureSample(noise0_texture, terrain_sampler, p.xz).rgb * n_norm.y + textureSample(noise0_texture, terrain_sampler, p.xy).rgb * n_norm.z;
+        col = textureSample(rgb_noise_texture, terrain_sampler, p.yz).rgb * n_norm.x + textureSample(rgb_noise_texture, terrain_sampler, p.xz).rgb * n_norm.y + textureSample(rgb_noise_texture, terrain_sampler, p.xy).rgb * n_norm.z;
     } else if tex_index == 2 {
         col = textureSample(grain_texture, terrain_sampler, p.yz).rgb * n_norm.x + textureSample(grain_texture, terrain_sampler, p.xz).rgb * n_norm.y + textureSample(grain_texture, terrain_sampler, p.xy).rgb * n_norm.z;
     } else if tex_index == 3 {

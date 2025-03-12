@@ -269,7 +269,7 @@ impl<'window> WgpuCtx<'window> {
         // Noise0 texture
         let rgb_noise_img = RgbaImg::new("./assets/images/textures/rgbnoise.png").unwrap();
         let rgb_noise_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Noise0 Texture"),
+            label: Some("Rgb noise Texture"),
             size: wgpu::Extent3d {
                 width: rgb_noise_img.width,
                 height: rgb_noise_img.height,
@@ -303,6 +303,45 @@ impl<'window> WgpuCtx<'window> {
         );
         let rgb_noise_texture_view =
             rgb_noise_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+
+        let gray_noise_img = RgbaImg::new("./assets/images/textures/graynoise.png").unwrap();
+        let gray_noise_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Gray noise Texture"),
+            size: wgpu::Extent3d {
+                width: gray_noise_img.width,
+                height: gray_noise_img.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &gray_noise_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &gray_noise_img.bytes,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * gray_noise_img.width),
+                rows_per_image: Some(gray_noise_img.height),
+            },
+            wgpu::Extent3d {
+                width: gray_noise_img.width,
+                height: gray_noise_img.height,
+                depth_or_array_layers: 1,
+            },
+        );
+        let gray_noise_texture_view =
+        gray_noise_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
 
         // Gray noise cube texture (3D)
         let gray_noise_cube_full =
@@ -484,7 +523,7 @@ impl<'window> WgpuCtx<'window> {
                         visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Texture {
                             multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D3,
+                            view_dimension: wgpu::TextureViewDimension::D2,
                             sample_type: wgpu::TextureSampleType::Float { filterable: true },
                         },
                         count: None,
@@ -494,7 +533,7 @@ impl<'window> WgpuCtx<'window> {
                         visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Texture {
                             multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D2,
+                            view_dimension: wgpu::TextureViewDimension::D3,
                             sample_type: wgpu::TextureSampleType::Float { filterable: true },
                         },
                         count: None,
@@ -522,6 +561,16 @@ impl<'window> WgpuCtx<'window> {
                     wgpu::BindGroupLayoutEntry {
                         binding: 5,
                         visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 6,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                         count: None,
                     },
@@ -539,22 +588,26 @@ impl<'window> WgpuCtx<'window> {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&gray_noise_cube_texture_view),
+                    resource: wgpu::BindingResource::TextureView(&gray_noise_texture_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&grain_texture_view),
+                    resource: wgpu::BindingResource::TextureView(&gray_noise_cube_texture_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: wgpu::BindingResource::TextureView(&dirt_texture_view),
+                    resource: wgpu::BindingResource::TextureView(&grain_texture_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
-                    resource: wgpu::BindingResource::TextureView(&pebble_texture_view),
+                    resource: wgpu::BindingResource::TextureView(&dirt_texture_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 5,
+                    resource: wgpu::BindingResource::TextureView(&pebble_texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
                     resource: wgpu::BindingResource::Sampler(&texture_sampler),
                 },
             ],
