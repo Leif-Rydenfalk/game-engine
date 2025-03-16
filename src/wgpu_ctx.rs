@@ -228,7 +228,8 @@ impl<'window> WgpuCtx<'window> {
         let size = window.inner_size();
         let width = size.width.max(1);
         let height = size.height.max(1);
-        let surface_config = surface.get_default_config(&adapter, width, height).unwrap();
+        let mut surface_config = surface.get_default_config(&adapter, width, height).unwrap();
+        surface_config.present_mode = wgpu::PresentMode::Fifo; // Explicitly enable vsync
         surface.configure(&device, &surface_config);
 
         // Vertex and index buffers for rendering a full-screen quad
