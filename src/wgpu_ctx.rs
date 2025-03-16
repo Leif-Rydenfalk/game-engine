@@ -1,9 +1,9 @@
 use crate::vertex::{create_vertex_buffer_layout, INDICES_SQUARE, VERTICES_SQUARE};
 use crate::{
-    BloomEffect, ColorCorrectionEffect, ColorCorrectionUniform, Model, ModelInstance, RgbaImg,
-    Transform,
+    BloomEffect, Camera, CameraController, ColorCorrectionEffect, ColorCorrectionUniform, Model,
+    ModelInstance, RgbaImg, Transform,
 };
-use cgmath::{Matrix4, SquareMatrix};
+use cgmath::{Matrix4, Point3, SquareMatrix};
 use hecs::World;
 use std::borrow::Cow;
 use std::{path::Path, sync::Arc, time::Instant};
@@ -17,7 +17,7 @@ use imgui_winit_support::WinitPlatform;
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct VoxelSettings {
+pub struct Settings {
     // Constants from shader
     pub max: f32,
     pub r_inner: f32,
@@ -52,7 +52,7 @@ pub struct VoxelSettings {
     // _padding2: u8
 }
 
-impl Default for VoxelSettings {
+impl Default for Settings {
     fn default() -> Self {
         // Calculate voxel_size based on voxel_level for consistency
         let voxel_level = 3;
@@ -91,7 +91,7 @@ impl Default for VoxelSettings {
     }
 }
 
-impl VoxelSettings {
+impl Settings {
     pub fn update_voxel_size(&mut self) {
         self.voxel_size = 2.0f32.powf(-self.voxel_level as f32);
     }
@@ -152,18 +152,21 @@ pub struct WgpuCtx<'window> {
     post_process_texture: wgpu::Texture,
     post_process_texture_view: wgpu::TextureView,
     color_correction_effect: ColorCorrectionEffect,
-    noise0_texture: wgpu::Texture,
-    noise1_texture: wgpu::Texture,
+    rgb_noise_texture: wgpu::Texture,
+    gray_noise_cube_texture: wgpu::Texture,
     grain_texture: wgpu::Texture,
     dirt_texture: wgpu::Texture,
+    pebble_texture: wgpu::Texture,
     terrain_bind_group_layout: wgpu::BindGroupLayout,
     terrain_bind_group: wgpu::BindGroup,
     time: Instant,
     hidpi_factor: f64,
     pub imgui: ImguiState,
-    voxel_settings: VoxelSettings,
+    voxel_settings: Settings,
     voxel_settings_buffer: wgpu::Buffer,
     voxel_settings_bind_group: wgpu::BindGroup,
+    sun_incline: f32,
+    time_of_day: f32,
 }
 
 impl<'window> WgpuCtx<'window> {
@@ -264,12 +267,12 @@ impl<'window> WgpuCtx<'window> {
 
         // Load multiple textures (emulating Shadertoy iChannels)
         // Noise0 texture
-        let noise0_img = RgbaImg::new("./assets/images/textures/rgbnoise.png").unwrap();
-        let noise0_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Noise0 Texture"),
+        let rgb_noise_img = RgbaImg::new("./assets/images/textures/rgbnoise.png").unwrap();
+        let rgb_noise_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Rgb noise Texture"),
             size: wgpu::Extent3d {
-                width: noise0_img.width,
-                height: noise0_img.height,
+                width: rgb_noise_img.width,
+                height: rgb_noise_img.height,
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
@@ -281,38 +284,75 @@ impl<'window> WgpuCtx<'window> {
         });
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
-                texture: &noise0_texture,
+                texture: &rgb_noise_texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            &noise0_img.bytes,
+            &rgb_noise_img.bytes,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(4 * noise0_img.width),
-                rows_per_image: Some(noise0_img.height),
+                bytes_per_row: Some(4 * rgb_noise_img.width),
+                rows_per_image: Some(rgb_noise_img.height),
             },
             wgpu::Extent3d {
-                width: noise0_img.width,
-                height: noise0_img.height,
+                width: rgb_noise_img.width,
+                height: rgb_noise_img.height,
                 depth_or_array_layers: 1,
             },
         );
-        let noise0_texture_view =
-            noise0_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let rgb_noise_texture_view =
+            rgb_noise_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        // Noise1 texture (3D)
-        let noise1_data_full =
+        let gray_noise_img = RgbaImg::new("./assets/images/textures/graynoise.png").unwrap();
+        let gray_noise_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Gray noise Texture"),
+            size: wgpu::Extent3d {
+                width: gray_noise_img.width,
+                height: gray_noise_img.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &gray_noise_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &gray_noise_img.bytes,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * gray_noise_img.width),
+                rows_per_image: Some(gray_noise_img.height),
+            },
+            wgpu::Extent3d {
+                width: gray_noise_img.width,
+                height: gray_noise_img.height,
+                depth_or_array_layers: 1,
+            },
+        );
+        let gray_noise_texture_view =
+            gray_noise_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        // Gray noise cube texture (3D)
+        let gray_noise_cube_full =
             std::fs::read("./assets/images/textures/graynoise_32x32x32_cube.bin")
                 .expect("Failed to read noise1 binary file");
-        let noise1_data = &noise1_data_full[20..20 + 32 * 32 * 32];
+        let gray_noise_cube_data = &gray_noise_cube_full[20..20 + 32 * 32 * 32];
         assert_eq!(
-            noise1_data.len(),
+            gray_noise_cube_data.len(),
             32 * 32 * 32,
             "Noise1 data size mismatch; expected 32768 bytes"
         );
 
-        let noise1_texture = device.create_texture(&wgpu::TextureDescriptor {
+        let gray_noise_cube_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Noise1 Texture"),
             size: wgpu::Extent3d {
                 width: 32,
@@ -329,12 +369,12 @@ impl<'window> WgpuCtx<'window> {
 
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
-                texture: &noise1_texture,
+                texture: &gray_noise_cube_texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            noise1_data,
+            gray_noise_cube_data,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(32), // 32 texels * 1 byte per texel
@@ -347,11 +387,11 @@ impl<'window> WgpuCtx<'window> {
             },
         );
 
-        let noise1_texture_view =
-            noise1_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let gray_noise_cube_texture_view =
+            gray_noise_cube_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         // Grain texture
-        let grain_img = RgbaImg::new("./assets/images/textures/stone.png").unwrap();
+        let grain_img = RgbaImg::new("./assets/images/textures/grain.png").unwrap();
         let grain_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Grain Texture"),
             size: wgpu::Extent3d {
@@ -424,6 +464,44 @@ impl<'window> WgpuCtx<'window> {
         );
         let dirt_texture_view = dirt_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
+        // Pebble texture
+        let pebble_img = RgbaImg::new("./assets/images/textures/pebble.png").unwrap();
+        let pebble_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Dirt Texture"),
+            size: wgpu::Extent3d {
+                width: dirt_img.width,
+                height: dirt_img.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &pebble_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &pebble_img.bytes,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * pebble_img.width),
+                rows_per_image: Some(pebble_img.height),
+            },
+            wgpu::Extent3d {
+                width: pebble_img.width,
+                height: pebble_img.height,
+                depth_or_array_layers: 1,
+            },
+        );
+        let pebble_texture_view =
+            pebble_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
         // Terrain bind group layout for multiple textures
         let terrain_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -433,7 +511,7 @@ impl<'window> WgpuCtx<'window> {
                         visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Texture {
                             multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D2, // noise0_texture is 2D
+                            view_dimension: wgpu::TextureViewDimension::D2,
                             sample_type: wgpu::TextureSampleType::Float { filterable: true },
                         },
                         count: None,
@@ -443,7 +521,7 @@ impl<'window> WgpuCtx<'window> {
                         visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Texture {
                             multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D3, // noise1_texture is 3D
+                            view_dimension: wgpu::TextureViewDimension::D2,
                             sample_type: wgpu::TextureSampleType::Float { filterable: true },
                         },
                         count: None,
@@ -453,7 +531,7 @@ impl<'window> WgpuCtx<'window> {
                         visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Texture {
                             multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D2, // grain_texture is 2D
+                            view_dimension: wgpu::TextureViewDimension::D3,
                             sample_type: wgpu::TextureSampleType::Float { filterable: true },
                         },
                         count: None,
@@ -463,13 +541,33 @@ impl<'window> WgpuCtx<'window> {
                         visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Texture {
                             multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D2, // dirt_texture is 2D
+                            view_dimension: wgpu::TextureViewDimension::D2,
                             sample_type: wgpu::TextureSampleType::Float { filterable: true },
                         },
                         count: None,
                     },
                     wgpu::BindGroupLayoutEntry {
                         binding: 4,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 5,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 6,
                         visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                         count: None,
@@ -484,22 +582,30 @@ impl<'window> WgpuCtx<'window> {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&noise0_texture_view),
+                    resource: wgpu::BindingResource::TextureView(&rgb_noise_texture_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&noise1_texture_view),
+                    resource: wgpu::BindingResource::TextureView(&gray_noise_texture_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&grain_texture_view),
+                    resource: wgpu::BindingResource::TextureView(&gray_noise_cube_texture_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: wgpu::BindingResource::TextureView(&dirt_texture_view),
+                    resource: wgpu::BindingResource::TextureView(&grain_texture_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
+                    resource: wgpu::BindingResource::TextureView(&dirt_texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::TextureView(&pebble_texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
                     resource: wgpu::BindingResource::Sampler(&texture_sampler),
                 },
             ],
@@ -523,7 +629,7 @@ impl<'window> WgpuCtx<'window> {
             });
 
         // Create the default settings
-        let voxel_settings = VoxelSettings::default();
+        let voxel_settings = Settings::default();
 
         // Create the buffer
         let voxel_settings_buffer = voxel_settings.create_buffer(&device);
@@ -746,7 +852,7 @@ impl<'window> WgpuCtx<'window> {
             render_pipeline,
             vertex_buffer,
             vertex_index_buffer,
-            texture: noise1_texture.clone(), // Primary texture for compatibility
+            texture: gray_noise_cube_texture.clone(), // Primary texture for compatibility
             texture_size: wgpu::Extent3d {
                 width: 32,
                 height: 32,
@@ -767,10 +873,11 @@ impl<'window> WgpuCtx<'window> {
             post_process_texture,
             post_process_texture_view,
             color_correction_effect,
-            noise0_texture,
-            noise1_texture,
+            rgb_noise_texture,
+            gray_noise_cube_texture,
             grain_texture,
             dirt_texture,
+            pebble_texture,
             terrain_bind_group_layout,
             terrain_bind_group,
             time: Instant::now(),
@@ -779,6 +886,8 @@ impl<'window> WgpuCtx<'window> {
             voxel_settings,
             voxel_settings_buffer,
             voxel_settings_bind_group,
+            time_of_day: 12.0,
+            sun_incline: 0.5, // In the middle of the sky
         }
     }
 
@@ -881,7 +990,7 @@ impl<'window> WgpuCtx<'window> {
     }
 
     /// Renders the scene with post-processing effects
-    pub fn draw(&mut self, world: &World, window: &Window) {
+    pub fn draw(&mut self, world: &mut World, window: &Window) {
         let surface_texture = self
             .surface
             .get_current_texture()
@@ -970,18 +1079,63 @@ impl<'window> WgpuCtx<'window> {
         // Build your UI here
         {
             let mut modified = false;
-            let window = ui.window("Voxel Settings");
+            let window = ui.window("Settings");
             window
                 .size([300.0, 200.0], Condition::FirstUseEver)
+                .always_auto_resize(true)
                 .build(|| {
-                    if ui.slider("Voxel Level", 1, 7, &mut self.voxel_settings.voxel_level) {
+                    if ui.button("Set Camera Position Origin") {
+                        for (_, (transform, camera, controller)) in
+                            world
+                                .query_mut::<(&mut Transform, &mut Camera, &mut CameraController)>()
+                        {
+                            transform.position = Point3::new(6.0, 2.2, 6.0);
+                        }
+                    }
+                    for (_, (transform, camera, controller)) in
+                        world.query_mut::<(&mut Transform, &mut Camera, &mut CameraController)>()
+                    {
+                        let mut pos: [f32; 3] = transform.position.into();
+                        if ui.input_float3("Camera Transform", &mut pos).build() {
+                            transform.position = pos.into();
+                        }
+                    }
+
+                    if ui.slider("Voxel Level", 1, 8, &mut self.voxel_settings.voxel_level) {
                         self.voxel_settings.update_voxel_size();
                         modified = true;
                     }
-                    // // Add buttons to test mouse capture
-                    // if ui.button("Test Button") {
-                    //     println!("ImGui button clicked!");
-                    // }
+                    if ui
+                        .input_float("Max Ray Distance", &mut self.voxel_settings.max_dist)
+                        .build()
+                    {
+                        modified = true;
+                    }
+
+                    if ui
+                        .input_float("Water Height", &mut self.voxel_settings.water_height)
+                        .build()
+                    {
+                        self.voxel_settings.max_water_height = self.voxel_settings.water_height;
+                        modified = true;
+                    }
+                    if ui
+                        .input_float("Max terrain Height", &mut self.voxel_settings.max_height)
+                        .build()
+                    {
+                        modified = true;
+                    }
+
+                    if ui.slider("Sun Incline", 0.0, 1.0, &mut self.sun_incline) {
+                        self.voxel_settings.light_direction =
+                            calculate_sun_direction(self.time_of_day, self.sun_incline);
+                        modified = true;
+                    }
+                    if ui.slider("Time of Day", 0.0, 24.0, &mut self.time_of_day) {
+                        self.voxel_settings.light_direction =
+                            calculate_sun_direction(self.time_of_day, self.sun_incline);
+                        modified = true;
+                    }
 
                     // // Add input field to test keyboard capture
                     // let mut test_input = String::new();
@@ -1087,4 +1241,28 @@ fn create_pipeline(
         multiview: None,
         cache: None,
     })
+}
+
+fn calculate_sun_direction(time_of_day: f32, sun_incline: f32) -> [f32; 4] {
+    // Convert time to an angle in radians (0-24 hours maps to 0-2π)
+    let time_angle = (time_of_day / 24.0) * 2.0 * std::f32::consts::PI;
+
+    // Calculate horizontal position using time (x and z components)
+    let x = time_angle.cos();
+    let z = time_angle.sin();
+
+    // Calculate vertical position using incline (y component)
+    // Map 0.0-1.0 to appropriate elevation angle
+    // At incline 0.0, sun is at horizon (y=0)
+    // At incline 1.0, sun is directly overhead (y=1, x/z reduced)
+    let incline_angle = sun_incline * std::f32::consts::FRAC_PI_2; // 0 to π/2
+    let y = incline_angle.sin();
+
+    // Adjust x and z based on elevation to keep vector normalized
+    let horizontal_scale = incline_angle.cos();
+    let x_adjusted = x * horizontal_scale;
+    let z_adjusted = z * horizontal_scale;
+
+    // Return normalized direction vector
+    [x_adjusted, -z_adjusted, y, 0.0] // Negative z to match common 3D coordinate systems
 }

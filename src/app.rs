@@ -148,7 +148,7 @@ impl<'window> ApplicationHandler for App<'window> {
                 }
 
                 if let Some(wgpu_ctx) = &mut self.wgpu_ctx {
-                    wgpu_ctx.draw(&self.world, self.window.as_mut().unwrap());
+                    wgpu_ctx.draw(&mut self.world, self.window.as_mut().unwrap());
                 }
 
                 self.input_system.update();
