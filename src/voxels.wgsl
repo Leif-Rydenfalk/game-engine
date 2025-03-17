@@ -368,8 +368,7 @@ fn shade(pos: vec3f, ldir: vec3f, lod: f32, hit: HitInfo) -> vec3f {
     var col = getAlbedo(vpos, gn, lod);
     let ao = smoothstep(-0.08, 0.04, map(pos) / length(grad(pos)));
     let hao = smoothstep(settings.water_height - 12.0, settings.water_height, pos.y);
-    col *= dot(abs(n), vec3f(0.8, 1.0, 0.9));
-    // Fixed: Added missing * operators
+    //  col *= dot(abs(n), vec3f(0.8, 1.0, 0.9));
     col *= (dif * 0.6 + 0.4) * settings.light_color.rgb;
     col *= (ao * 0.6 + 0.4) * (hao * 0.6 + 0.4);
     return col;
@@ -397,6 +396,10 @@ fn shade2(pos: vec3f, ldir: vec3f, lod: f32, hit: HitInfo) -> vec3f {
 fn ACESFilm(x: vec3f) -> vec3f {
     let a = 2.51; let b = 0.03; let c = 2.43; let d = 0.59; let e = 0.14;
     return clamp((x * (a * x + b)) / (x * (c * x + d) + e), vec3f(0.0), vec3f(1.0));
+}
+
+fn get_water_height(wuv: vec2f) -> f32 {
+    return textureSample(grain_texture, terrain_sampler, wuv).r;
 }
 
 @vertex
@@ -447,76 +450,76 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
         t = settings.max_dist;
     }
 
-    let pt = -(ro.y - settings.water_height) / rd.y;
-    if ((pt > 0.0 && pt < t)) || ro.y < settings.water_height {
-        if !hit.is_hit {
-            let biome = getBiome(ro + rd * pt);
-            col = mix(vec3f(0.5, 0.8, 1.0), vec3f(1.0, 0.85, 0.6), biome.x);
-        }
+    // let pt = -(ro.y - settings.water_height) / rd.y;
+    // if ((pt > 0.0 && pt < t)) || ro.y < settings.water_height {
+    //     if !hit.is_hit {
+    //         let biome = getBiome(ro + rd * pt);
+    //         col = mix(vec3f(0.5, 0.8, 1.0), vec3f(1.0, 0.85, 0.6), biome.x);
+    //     }
 
-        let biome = getBiome(ro + rd * pt);
-        var wcol = vec3f(0.3, 0.8, 1.0);
-        wcol = mix(wcol, vec3f(0.4, 0.9, 0.8), biome.x);
-        wcol = mix(wcol, vec3f(0.1, 0.7, 0.9), biome.y);
+    //     // let biome = getBiome(ro + rd * pt);
+    //     // var wcol = vec3f(0.3, 0.8, 1.0);
+    //     // wcol = mix(wcol, vec3f(0.4, 0.9, 0.8), biome.x);
+    //     // wcol = mix(wcol, vec3f(0.1, 0.7, 0.9), biome.y);
 
-        let wabs = vec3f(0.1, 0.7, 0.9);
+    //     // let wabs = vec3f(0.1, 0.7, 0.9);
 
-        var adjusted_pt = pt;
-        if ro.y < settings.water_height && pt < 0.0 {
-            adjusted_pt = settings.max_dist;
-        }
+    //     // var adjusted_pt = pt;
+    //     // if ro.y < settings.water_height && pt < 0.0 {
+    //     //     adjusted_pt = settings.max_dist;
+    //     // }
 
-        let wpos = ro + rd * adjusted_pt;
+    //     // let wpos = ro + rd * adjusted_pt;
 
-        let e = 0.001;
-        let wnstr = 1500.0;
-        let wo = vec2f(1.0, 0.8) * camera.time * 0.01;
-        let wuv = wpos.xz * 0.08 + wo;
-        let wh = textureSample(grain_texture, terrain_sampler, wuv).r;
-        let whdx = textureSample(grain_texture, terrain_sampler, wuv + vec2f(e, 0.0)).r;
-        let whdy = textureSample(grain_texture, terrain_sampler, wuv + vec2f(0.0, e)).r;
-        let wn = normalize(vec3f(wh - whdx, e * wnstr, wh - whdy));
-        let wref = reflect(rd, wn);
+    //     // let e = 0.001;
+    //     // let wnstr = 1500.0;
+    //     // let wo = vec2f(1.0, 0.8) * camera.time * 0.01;
+    //     // let wuv = wpos.xz * 0.08 + wo;
+    //     // let wh = get_water_height(wuv);
+    //     // let whdx = get_water_height(wuv + vec2f(e, 0.0));
+    //     // let whdy = get_water_height(wuv + vec2f(0.0, e));
+    //     // let wn = normalize(vec3f(wh - whdx, e * wnstr, wh - whdy));
+    //     // let wref = reflect(rd, wn);
 
-        var rcol = vec3f(0.0);
-        if ro.y > settings.water_height {
-            let hitR = trace(wpos + vec3f(0.0, 0.01, 0.0), wref, 15.0);
-            let lod = clamp(log2(distance(ro, hitR.id)) - 2.0, 0.0, 6.0);
+    //     // var rcol = vec3f(0.0);
+    //     // if ro.y > settings.water_height {
+    //     //     let hitR = trace(wpos + vec3f(0.0, 0.01, 0.0), wref, 15.0);
+    //     //     let lod = clamp(log2(distance(ro, hitR.id)) - 2.0, 0.0, 6.0);
             
-            if hitR.is_hit {
-                rcol = shade2(wpos, sun_dir, lod, hitR);
-            } else {
-                let w_sky_ro = wpos + vec3f(0.0, earth_radius, 0.0);
-                rcol = get_incident_light(Ray(wpos, wref), sun_dir);
-            }
-        }
+    //     //     if hitR.is_hit {
+    //     //         rcol = shade2(wpos, sun_dir, lod, hitR);
+    //     //     } else {
+    //     //         let w_sky_ro = wpos + vec3f(0.0, earth_radius, 0.0);
+    //     //         rcol = get_incident_light(Ray(wpos, wref), sun_dir);
+    //     //     }
+    //     // }
         
-        // Specular highlight
-        let spec = pow(max(dot(wref, sun_dir), 0.0), 50.0);
+    //     // // Specular highlight
+    //     // let spec = pow(max(dot(wref, sun_dir), 0.0), 50.0);
         
-        // Fresnel reflection factor
-        let r0 = 0.35;
-        var fre = r0 + (1.0 - r0) * pow(max(dot(rd, wn), 0.0), 5.0);
+    //     // // Fresnel reflection factor
+    //     // let r0 = 0.35;
+    //     // var fre = r0 + (1.0 - r0) * pow(max(dot(rd, wn), 0.0), 5.0);
 
-        if rd.y < 0.0 && ro.y < settings.water_height {
-            fre = 0.0;
-        }
+    //     // if rd.y < 0.0 && ro.y < settings.water_height {
+    //     //     fre = 0.0;
+    //     // }
         
-        // Water absorption
-        let abt = select(t - pt, min(t, pt), ro.y < settings.water_height);
-        col *= exp(-abt * (1.0 - wabs) * 0.1);
+    //     // // Water absorption
+    //     // let abt = select(t - pt, min(t, pt), ro.y < settings.water_height);
+    //     // col *= exp(-abt * (1.0 - wabs) * 0.1);
 
-        if pt < t {
-            col = mix(col, wcol * (rcol + spec), fre);
+    //     // if pt < t {
+    //     //     col = mix(col, wcol * (rcol + spec), fre);
             
-            // Foam effect
-            let wp = wpos + wn * vec3f(1.0, 0.0, 1.0) * 0.2;
-            let wd = map(wp) / length(grad(wp));
-            let foam = sin((wd - camera.time * 0.03) * 60.0);
-            let foam_mask = smoothstep(0.22, 0.0, wd + foam * 0.03 + (wh - 0.5) * 0.12);
-            col = mix(col, col + vec3f(1.0), foam_mask * 0.4);
-        }
-    }
+    //     //     // Foam effect
+    //     //     let wp = wpos + wn * vec3f(1.0, 0.0, 1.0) * 0.2;
+    //     //     let wd = map(wp) / length(grad(wp));
+    //     //     let foam = sin((wd - camera.time * 0.03) * 60.0);
+    //     //     let foam_mask = smoothstep(0.22, 0.0, wd + foam * 0.03 + (wh - 0.5) * 0.12);
+    //     //     col = mix(col, col + vec3f(1.0), foam_mask * 0.4);
+    //     // }
+    // }
     
     if settings.show_normals != 0 {
         col = hit.n;

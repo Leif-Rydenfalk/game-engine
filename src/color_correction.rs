@@ -28,7 +28,6 @@ impl ColorCorrectionEffect {
         queue: Arc<wgpu::Queue>,
         input_texture_view: &wgpu::TextureView,
         sampler: Arc<wgpu::Sampler>,
-        surface_format: wgpu::TextureFormat,
     ) -> Self {
         // Create bind group layout
         let cc_bind_group_layout =
@@ -91,7 +90,7 @@ impl ColorCorrectionEffect {
                 module: &cc_shader,
                 entry_point: Some("fs_main"),
                 compilation_options: Default::default(),
-                targets: &[Some(surface_format.into())],
+                targets: &[Some(wgpu::TextureFormat::Rgba32Float.into())],
             }),
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleStrip,

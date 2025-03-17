@@ -18,3 +18,5 @@ imgui-wgpu = { path = "lib/imgui-wgpu-rs" }
 imgui = "0.12"
 imgui-winit-support = "0.13"
 rustfft = "6.1.0"
+rapier2d = { version =  "0.23.1", features = [ "simd-stable" ] }
+nalgebra = "0.33.2"
