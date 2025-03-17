@@ -1207,7 +1207,7 @@ fn create_pipeline(
 ) -> wgpu::RenderPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: None,
-        source: ShaderSource::Wgsl(Cow::Borrowed(include_str!("sky.wgsl"))),
+        source: ShaderSource::Wgsl(Cow::Borrowed(include_str!("voxels.wgsl"))),
     });
 
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
