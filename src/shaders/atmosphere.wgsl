@@ -262,7 +262,7 @@ fn render_scene(pos: vec3f, dir: vec3f, light_dir: vec3f) -> vec4f {
         let surface_normal = normalize(sample_pos);
         
         // Planet color (dark blue-green)
-        color.xyz = vec3f(0.05, 0.1, 0.15);
+        color = vec4f(0.05, 0.1, 0.15, 1.0);
         
         // Simple lighting using Lommel-Seeliger law as in the reference shader
         let N = surface_normal;
