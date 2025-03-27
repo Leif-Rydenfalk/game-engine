@@ -68,6 +68,9 @@ pub use imgui_state::*;
 mod voxels;
 pub use voxels::*;
 
+mod sky;
+pub use sky::*;
+
 mod atmosphere;
 pub use atmosphere::*;
 
