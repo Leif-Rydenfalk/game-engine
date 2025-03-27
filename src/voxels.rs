@@ -1,7 +1,7 @@
 use crate::vertex::{create_vertex_buffer_layout, INDICES_SQUARE, VERTICES_SQUARE};
 use crate::{
     BloomEffect, Camera, CameraController, ColorCorrectionEffect, ColorCorrectionUniform, Model,
-    ModelInstance, RgbaImg, Transform,
+    ModelInstance, RgbaImg, ShaderHotReload, Transform,
 };
 use cgmath::{Matrix4, Point3, SquareMatrix};
 use hecs::World;
@@ -92,7 +92,7 @@ impl Settings {
 pub struct VoxelRenderer {
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
-    render_pipeline: wgpu::RenderPipeline,
+    pub render_pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
     vertex_index_buffer: wgpu::Buffer,
     texture_bind_group_layout: wgpu::BindGroupLayout,
@@ -109,6 +109,8 @@ pub struct VoxelRenderer {
     dirt_texture: wgpu::Texture,
     pebble_texture: wgpu::Texture,
     texture_sampler: Arc<wgpu::Sampler>,
+    shader_hot_reload: Arc<ShaderHotReload>,
+    pub pipeline_layout: wgpu::PipelineLayout,
 }
 
 impl VoxelRenderer {
@@ -117,6 +119,7 @@ impl VoxelRenderer {
         device: Arc<wgpu::Device>,
         queue: Arc<wgpu::Queue>,
         camera_bind_group_layout: &wgpu::BindGroupLayout,
+        shader_hot_reload: Arc<ShaderHotReload>,
     ) -> Self {
         // Texture sampler for voxel textures
         let texture_sampler = Arc::new(device.create_sampler(&SamplerDescriptor {
@@ -371,21 +374,25 @@ impl VoxelRenderer {
             usage: wgpu::BufferUsages::INDEX,
         });
 
-        // Render pipeline
-        let render_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: None,
-                bind_group_layouts: &[
-                    camera_bind_group_layout,
-                    &texture_bind_group_layout,
-                    &voxel_settings_bind_group_layout,
-                ],
-                push_constant_ranges: &[],
-            });
-        let render_pipeline = crate::create_pipeline(
+        // Create pipeline layout
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Voxel Render Pipeline Layout"),
+            bind_group_layouts: &[
+                camera_bind_group_layout,
+                &texture_bind_group_layout,
+                &voxel_settings_bind_group_layout,
+            ],
+            push_constant_ranges: &[],
+        });
+
+        // Get the voxel shader using hot reload
+        let voxel_shader = shader_hot_reload.get_shader("voxel.wgsl");
+
+        // Create render pipeline with hot reloaded shader
+        let render_pipeline = Self::create_pipeline(
             &device,
-            wgpu::TextureFormat::Rgba32Float,
-            &render_pipeline_layout,
+            &pipeline_layout,
+            &voxel_shader,
         );
 
         Self {
@@ -408,6 +415,68 @@ impl VoxelRenderer {
             dirt_texture,
             pebble_texture,
             texture_sampler,
+            shader_hot_reload,
+            pipeline_layout,
+        }
+    }
+
+    /// Create pipeline with the provided shader
+    pub fn create_pipeline(
+        device: &wgpu::Device,
+        pipeline_layout: &wgpu::PipelineLayout,
+        shader: &wgpu::ShaderModule,
+    ) -> wgpu::RenderPipeline {
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Voxel Render Pipeline"),
+            layout: Some(pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: shader,
+                entry_point: Some("vs_main"),
+                buffers: &[create_vertex_buffer_layout()],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba32Float,
+                    blend: None, // Some(wgpu::BlendState::REPLACE)
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: Some(wgpu::Face::Back),
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview: None,
+            cache: None,
+        })
+    }
+
+    /// Check for shader updates and recreate pipeline if needed
+    pub fn check_shader_updates(&mut self) {
+        let updated_shaders = self.shader_hot_reload.check_for_updates();
+        
+        if updated_shaders.contains(&"voxel.wgsl".to_string()) {
+            println!("Reloading voxel shader");
+            let voxel_shader = self.shader_hot_reload.get_shader("voxel.wgsl");
+            self.render_pipeline = Self::create_pipeline(
+                &self.device,
+                &self.pipeline_layout,
+                &voxel_shader,
+            );
         }
     }
 
@@ -428,5 +497,24 @@ impl VoxelRenderer {
             0,
             bytemuck::cast_slice(&[self.voxel_settings]),
         );
+    }
+
+    /// Updates light direction based on time of day and sun incline
+    pub fn update_light_direction(&mut self) {
+        let time_angle = (self.time_of_day / 24.0) * 2.0 * std::f32::consts::PI;
+        let x = time_angle.cos();
+        let z = time_angle.sin();
+        let incline_angle = self.sun_incline * std::f32::consts::FRAC_PI_2;
+        let y = incline_angle.sin();
+        let horizontal_scale = incline_angle.cos();
+        
+        self.voxel_settings.light_direction = [
+            x * horizontal_scale,
+            y,
+            z * horizontal_scale,
+            0.0,
+        ];
+        
+        self.update_settings_buffer();
     }
 }

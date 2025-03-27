@@ -1,0 +1,38 @@
+            // if ui.slider("Voxel Level", 1, 8, &mut self.voxel_renderer.voxel_settings.voxel_level) {
+                //     self.voxel_renderer.voxel_settings.update_voxel_size();
+                //     modified = true;
+                // }
+                
+                // if ui.input_float("Max Ray Distance", &mut self.voxel_renderer.voxel_settings.max_dist).build() {
+                //     modified = true;
+                // }
+                
+                // if ui.input_float("Water Height", &mut self.voxel_renderer.voxel_settings.water_height).build() {
+                //     self.voxel_renderer.voxel_settings.max_water_height = self.voxel_renderer.voxel_settings.water_height;
+                //     modified = true;
+                // }
+                
+                // if ui.input_float("Max Terrain Height", &mut self.voxel_renderer.voxel_settings.max_height).build() {
+                //     modified = true;
+                // }
+                
+                // if ui.slider("Sun Incline", 0.0, 1.0, &mut self.voxel_renderer.sun_incline) {
+                //     self.voxel_renderer.voxel_settings.light_direction = calculate_sun_direction(
+                //         self.voxel_renderer.time_of_day,
+                //         self.voxel_renderer.sun_incline,
+                //     );
+                //     modified = true;
+                // }
+                
+                // if ui.slider("Time of Day", 0.0, 24.0, &mut self.voxel_renderer.time_of_day) {
+                //     self.voxel_renderer.voxel_settings.light_direction = calculate_sun_direction(
+                //         self.voxel_renderer.time_of_day,
+                //         self.voxel_renderer.sun_incline,
+                //     );
+                //     modified = true;
+                // }
+      
+       // if modified {
+        //     self.voxel_renderer.update_settings_buffer();
+        // }
+    

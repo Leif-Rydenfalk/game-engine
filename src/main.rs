@@ -68,8 +68,8 @@ pub use imgui_state::*;
 mod voxels;
 pub use voxels::*;
 
-mod clouds;
-pub use clouds::*;
+mod atmosphere;
+pub use atmosphere::*;
 
 mod input;
 pub use input::*;

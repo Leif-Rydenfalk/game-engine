@@ -1,5 +1,4 @@
 use std::sync::Arc;
-
 use std::borrow::Cow;
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 use wgpu::{MemoryHints, SamplerDescriptor, ShaderSource};
@@ -28,6 +27,7 @@ impl ColorCorrectionEffect {
         queue: Arc<wgpu::Queue>,
         input_texture_view: &wgpu::TextureView,
         sampler: Arc<wgpu::Sampler>,
+        custom_shader: Option<&wgpu::ShaderModule>,
     ) -> Self {
         // Create bind group layout
         let cc_bind_group_layout =
@@ -70,11 +70,14 @@ impl ColorCorrectionEffect {
             push_constant_ranges: &[],
         });
 
-        // Load shader
-        let cc_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Color Correction Shader"),
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("color_correction.wgsl"))),
-        });
+        // Use custom shader if provided, otherwise load from embedded source
+        let cc_shader = match custom_shader {
+            Some(shader) => shader.clone(),
+            None => device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("Color Correction Shader"),
+                source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("shaders/color_correction.wgsl"))),
+            }),
+        };
 
         // Create render pipeline
         let cc_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
