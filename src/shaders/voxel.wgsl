@@ -48,19 +48,7 @@ struct SettingsUniform {
     show_normals: i32,
     show_ray_steps: i32,
     visualize_distance_field: i32,
-    max: f32, // Unused/Legacy
-    // --- Auto Padding to 96 bytes --- (Implicit)
-    r_inner: f32, // Unused/Legacy
-    r: f32, // Unused/Legacy
-    max_water_height: f32, // Unused/Legacy (Different from max_water_influenced_height!)
-    tunnel_radius: f32, // Unused/Legacy
-    // --- Auto Padding to 112 bytes --- (Implicit)
-    camera_speed: f32, // Unused/Legacy
-    camera_time_offset: f32, // Unused/Legacy
-    voxel_level: i32, // Unused/Legacy
-    // --- WGSL representation of Rust's _wgsl_explicit_padding field ---
-    _wgsl_explicit_padding: vec3f, // Matches the [f32; 3] in Rust for layout
-    // Final padding handled implicitly by WGSL
+        // Implicit padding handled by WGSL layout rules
 };
 
 // --- Bindings ---
