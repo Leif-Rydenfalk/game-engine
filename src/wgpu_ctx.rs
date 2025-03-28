@@ -1,121 +1,149 @@
-use crate::vertex::{create_vertex_buffer_layout, INDICES_SQUARE, VERTICES_SQUARE};
 use crate::{
-    BloomEffect, Camera, CameraController, ColorCorrectionEffect, ColorCorrectionUniform, Model,
-    ModelInstance, RgbaImg, Transform,
+    AtmosphereRenderer, BloomEffect, Camera, CameraController, ColorCorrectionEffect, 
+    ColorCorrectionUniform, ImguiState, Model, Transform, VoxelRenderer, Settings
 };
 use cgmath::{Matrix4, Point3, SquareMatrix};
 use hecs::World;
 use std::borrow::Cow;
-use std::{path::Path, sync::Arc, time::Instant};
+use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::{time::{Duration, Instant, SystemTime}};
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
-use wgpu::{MemoryHints, SamplerDescriptor, ShaderSource};
+use wgpu::{MemoryHints, PipelineCompilationOptions, SamplerDescriptor, ShaderSource};
 use winit::window::Window;
 
 use imgui::*;
 use imgui_wgpu::{Renderer, RendererConfig};
 use imgui_winit_support::WinitPlatform;
 
-#[repr(C)]
-#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct Settings {
-    // Constants from shader
-    pub max: f32,
-    pub r_inner: f32,
-    pub r: f32,
-    pub max_height: f32,
-    pub max_water_height: f32,
-    pub water_height: f32,
-    pub tunnel_radius: f32,
-    pub surface_factor: f32,
-    pub camera_speed: f32,
-    pub camera_time_offset: f32,
-    pub voxel_level: i32,
-    pub voxel_size: f32,
-    pub steps: i32,
-    pub max_dist: f32,
-    pub min_dist: f32,
-    pub eps: f32,
-
-    // Light settings
-    pub light_color: [f32; 4],     // Using vec4 for alignment
-    pub light_direction: [f32; 4], // Using vec4 for alignment
-
-    // Debug flags (using i32 as bools for uniform compatibility)
-    pub show_normals: i32,
-    pub show_steps: i32,
-    pub visualize_distance_field: i32,
-
-    _padding: u32,
-    // // Padding to ensure 16-byte alignment
-    // _padding: [u8; 8],
-    // _padding: u32,
-    // _padding2: u8
+/// Enum for selecting the active rendering mode
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RenderMode {
+    Voxel,
+    Atmosphere,
 }
 
-impl Default for Settings {
-    fn default() -> Self {
-        // Calculate voxel_size based on voxel_level for consistency
-        let voxel_level = 3;
-        let voxel_size = 2.0f32.powf(-voxel_level as f32);
+// --- ShaderHotReload implementation ---
+pub struct ShaderHotReload {
+    device: Arc<wgpu::Device>,
+    shader_dir: PathBuf,
+    modules: Mutex<HashMap<String, (wgpu::ShaderModule, SystemTime)>>,
+    last_check: Mutex<SystemTime>,
+}
 
+impl ShaderHotReload {
+    pub fn new(device: Arc<wgpu::Device>, shader_dir: impl AsRef<Path>) -> Self {
         Self {
-            max: 10000.0,
-            r_inner: 1.0,
-            r: 1.0 + 0.8, // R_INNER + 0.8
-            max_height: 5.0,
-            max_water_height: -2.2,
-            water_height: -2.2, // Same as MAX_WATER_HEIGHT
-            tunnel_radius: 1.1,
-            surface_factor: 0.42,
-            camera_speed: -1.5,
-            camera_time_offset: 0.0,
-            voxel_level,
-            voxel_size,
-            steps: 512 * 2 * 2,
-            max_dist: 600000.0,
-            min_dist: 0.0001,
-            eps: 1e-5,
-
-            // Light settings - converted to arrays for uniform compatibility
-            light_color: [1.0, 0.9, 0.75, 2.0], // vec3f(1.0, 0.9, 0.75) * 2.0
-            light_direction: [0.507746, 0.716817, 0.477878, 0.0], // Normalized in shader
-
-            // Debug flags
-            show_normals: 0,             // false
-            show_steps: 0,               // false
-            visualize_distance_field: 0, // false
-
-            // _padding: [0; 8],
-            _padding: 0,
+            device,
+            shader_dir: shader_dir.as_ref().to_path_buf(),
+            modules: Mutex::new(HashMap::new()),
+            last_check: Mutex::new(SystemTime::now()),
         }
     }
-}
 
-impl Settings {
-    pub fn update_voxel_size(&mut self) {
-        self.voxel_size = 2.0f32.powf(-self.voxel_level as f32);
+    pub fn get_shader(&self, name: &str) -> wgpu::ShaderModule {
+        let mut modules = self.modules.lock().unwrap();
+        let path = self.shader_dir.join(name);
+        
+        // Try to get modification time, if file doesn't exist or has other issues, 
+        // fallback to embedded shader
+        let metadata = match fs::metadata(&path) {
+            Ok(meta) => meta,
+            Err(e) => {
+                println!("Warning: Couldn't read shader file {}: {}", path.display(), e);
+                // Return embedded fallback shader
+                return self.create_fallback_shader(name);
+            }
+        };
+        
+        let modified = match metadata.modified() {
+            Ok(time) => time,
+            Err(e) => {
+                println!("Warning: Couldn't get modification time for {}: {}", path.display(), e);
+                // Return embedded fallback shader
+                return self.create_fallback_shader(name);
+            }
+        };
+        
+        if let Some((module, last_modified)) = modules.get(name) {
+            if *last_modified >= modified {
+                return module.clone();
+            }
+        }
+        
+        // Load shader from file
+        let source = match fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(e) => {
+                println!("Warning: Failed to read shader file {}: {}", path.display(), e);
+                // Return embedded fallback shader
+                return self.create_fallback_shader(name);
+            }
+        };
+            
+        let shader_module = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some(name),
+            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Owned(source)),
+        });
+        
+        modules.insert(name.to_string(), (shader_module.clone(), modified));
+        println!("Loaded shader: {}", name);
+        
+        shader_module
     }
-
-    // Create buffer from settings
-    pub fn create_buffer(&self, device: &wgpu::Device) -> wgpu::Buffer {
-        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Voxel Settings Buffer"),
-            contents: bytemuck::cast_slice(&[*self]),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    
+    fn create_fallback_shader(&self, name: &str) -> wgpu::ShaderModule {
+        // For simplicity, we're using empty shaders as fallbacks
+        // In a real implementation, you would embed the shaders here
+        let fallback_source = match name {
+            "bloom.wgsl" => include_str!("shaders/bloom.wgsl"),
+            "color_correction.wgsl" => include_str!("shaders/color_correction.wgsl"),
+            "final_conversion.wgsl" => include_str!("shaders/final_conversion.wgsl"),
+            "atmosphere.wgsl" => include_str!("shaders/atmosphere.wgsl"),
+            "voxel.wgsl" => include_str!("shaders/voxel.wgsl"),
+            _ => {
+                println!("Unknown shader: {}, using empty fallback", name);
+                "// Empty fallback shader\n@vertex fn vs_main() -> @builtin(position) vec4<f32> { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }\n@fragment fn fs_main() -> @location(0) vec4<f32> { return vec4<f32>(1.0, 0.0, 1.0, 1.0); }"
+            }
+        };
+        
+        self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some(&format!("{}_fallback", name)),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(fallback_source)),
         })
     }
+    
+    pub fn check_for_updates(&self) -> Vec<String> {
+        let mut last_check = self.last_check.lock().unwrap();
+        let now = SystemTime::now();
+        let mut updated_shaders = Vec::new();
+        
+        // Only check every 1 second to avoid excessive file reads
+        if now.duration_since(*last_check).unwrap_or(Duration::from_secs(0)) < Duration::from_secs(1) {
+            return updated_shaders;
+        }
+        
+        *last_check = now;
+        let modules = self.modules.lock().unwrap();
+        
+        for (name, (_, last_modified)) in modules.iter() {
+            let path = self.shader_dir.join(name);
+            if let Ok(metadata) = fs::metadata(&path) {
+                if let Ok(modified) = metadata.modified() {
+                    if modified > *last_modified {
+                        updated_shaders.push(name.clone());
+                    }
+                }
+            }
+        }
+        
+        updated_shaders
+    }
 }
 
-pub struct ImguiState {
-    pub context: imgui::Context,
-    pub platform: WinitPlatform,
-    pub renderer: Renderer,
-    pub clear_color: wgpu::Color,
-    pub demo_open: bool,
-    pub last_frame: Instant,
-    pub last_cursor: Option<MouseCursor>,
-}
-
+// --- CameraUniform Struct ---
 #[repr(C)]
 #[derive(Default, Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct CameraUniform {
@@ -124,82 +152,227 @@ struct CameraUniform {
     view: [[f32; 4]; 4],
     position: [f32; 3],
     time: f32,
+    resolution: [f32; 2],
+    _padding: [f32; 2],
 }
 
+// --- WgpuCtx Struct ---
 pub struct WgpuCtx<'window> {
     surface: wgpu::Surface<'window>,
     surface_config: wgpu::SurfaceConfiguration,
     adapter: wgpu::Adapter,
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
-    render_pipeline: wgpu::RenderPipeline,
-    vertex_buffer: wgpu::Buffer,
-    vertex_index_buffer: wgpu::Buffer,
-    texture: wgpu::Texture,
-    texture_size: wgpu::Extent3d,
-    sampler: Arc<wgpu::Sampler>,
-    texture_sampler: Arc<wgpu::Sampler>,
-    bind_group: wgpu::BindGroup,
+    
+    // Shader hot reloading
+    shader_hot_reload: Arc<ShaderHotReload>,
+    
+    // Camera resources
     camera_buffer: wgpu::Buffer,
+    camera_bind_group_layout: wgpu::BindGroupLayout,
     camera_bind_group: wgpu::BindGroup,
+    
+    // Depth resources
     depth_texture: wgpu::Texture,
     depth_texture_view: wgpu::TextureView,
+    
+    // Rendering resources
     models: Vec<Model>,
-    texture_bind_group_layout: Arc<wgpu::BindGroupLayout>,
+    render_texture_bind_group_layout: Arc<wgpu::BindGroupLayout>,
     render_texture: wgpu::Texture,
     render_texture_view: wgpu::TextureView,
+    sampler: Arc<wgpu::Sampler>,
+    
+    // Post-processing resources
     bloom_effect: BloomEffect,
     post_process_texture: wgpu::Texture,
     post_process_texture_view: wgpu::TextureView,
     color_correction_effect: ColorCorrectionEffect,
-    rgb_noise_texture: wgpu::Texture,
-    gray_noise_cube_texture: wgpu::Texture,
-    grain_texture: wgpu::Texture,
-    dirt_texture: wgpu::Texture,
-    pebble_texture: wgpu::Texture,
-    terrain_bind_group_layout: wgpu::BindGroupLayout,
-    terrain_bind_group: wgpu::BindGroup,
+    
+    // Final rendering resources (simplified conversion)
+    final_render_pipeline: wgpu::RenderPipeline,
+    final_vertex_buffer: wgpu::Buffer,
+    final_texture_bind_group: wgpu::BindGroup,
+    
+    // State tracking
     time: Instant,
     hidpi_factor: f64,
+    
+    // Renderers and UI
     pub imgui: ImguiState,
-    voxel_settings: Settings,
-    voxel_settings_buffer: wgpu::Buffer,
-    voxel_settings_bind_group: wgpu::BindGroup,
-    sun_incline: f32,
-    time_of_day: f32,
+    pub render_mode: RenderMode,
+    voxel_renderer: VoxelRenderer,
+    atmosphere_renderer: AtmosphereRenderer,
+    atmosphere_output_bind_group: wgpu::BindGroup,
 }
 
 impl<'window> WgpuCtx<'window> {
-    /// Creates a depth texture and its view for depth testing
-    fn create_depth_texture(
-        device: &wgpu::Device,
-        config: &wgpu::SurfaceConfiguration,
-    ) -> (wgpu::Texture, wgpu::TextureView) {
-        let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Depth Texture"),
-            size: wgpu::Extent3d {
-                width: config.width,
-                height: config.height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Depth32Float,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-
-        let depth_texture_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-        (depth_texture, depth_texture_view)
+    /// Synchronous constructor wrapper
+    pub fn new(window: Arc<Window>) -> Self {
+        pollster::block_on(Self::new_async(window))
     }
 
-    /// Asynchronous constructor for WgpuCtx
-    pub async fn new_async(window: Arc<Window>) -> WgpuCtx<'window> {
-        // Core WGPU setup
+    /// Asynchronous constructor
+    pub async fn new_async(window: Arc<Window>) -> Self {
+        // Initialize WGPU core resources
+        let (surface, surface_config, adapter, device, queue) = Self::init_wgpu_core(Arc::clone(&window)).await;
+        
+        // Create shader hot reloading manager
+        let shader_hot_reload = Arc::new(ShaderHotReload::new(
+            Arc::clone(&device),
+            std::path::Path::new("src/shaders")  // Change this to your shader directory
+        ));
+        
+        // Create camera resources
+        let (camera_buffer, camera_bind_group_layout, camera_bind_group) = 
+            Self::create_camera_resources(&device);
+        
+        // Create depth resources
+        let (depth_texture, depth_texture_view) = 
+            Self::create_depth_texture(&device, &surface_config);
+        
+        // Create render texture resources
+        let render_texture_bind_group_layout = Self::create_texture_bind_group_layout(&device);
+        let (render_texture, render_texture_view) = 
+            Self::create_color_texture(&device, &surface_config, "Render Texture", wgpu::TextureFormat::Rgba32Float);
+        
+        // Create sampler
+        let sampler = Arc::new(device.create_sampler(&SamplerDescriptor {
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        }));
+        
+        // Create post-processing resources - use shader hot reload
+        let bloom_shader = shader_hot_reload.get_shader("bloom.wgsl");
+        
+        // Create post-processing textures (both are now Rgba32Float)
+        let (post_process_texture, post_process_texture_view) = 
+            Self::create_color_texture(&device, &surface_config, "Post Process Texture", wgpu::TextureFormat::Rgba32Float);
+        
+        let bloom_effect = BloomEffect::new(
+            Arc::clone(&device),
+            Arc::clone(&queue),
+            Arc::clone(&render_texture_bind_group_layout),
+            Arc::clone(&sampler),
+            surface_config.width,
+            surface_config.height,
+            &render_texture_view,
+            &bloom_shader,
+        );
+        
+        let color_correction_shader = shader_hot_reload.get_shader("color_correction.wgsl");
+        let color_correction_effect = ColorCorrectionEffect::new(
+            Arc::clone(&device),
+            Arc::clone(&queue),
+            &post_process_texture_view,
+            Arc::clone(&sampler),
+            Some(&color_correction_shader),
+        );
+        
+        // Create final texture bind group
+        let final_texture_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &render_texture_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&render_texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+            label: Some("final_texture_bind_group"),
+        });
+        
+        // Create final render pipeline and vertex buffer for direct conversion - use shader hot reload
+        let final_shader = shader_hot_reload.get_shader("final_conversion.wgsl");
+        let (final_render_pipeline, final_vertex_buffer) = 
+            Self::create_final_render_pipeline_with_shader(
+                &device, 
+                &render_texture_bind_group_layout,
+                surface_config.format,
+                &final_shader,
+            );
+        
+        // Initialize voxel renderer with hot reloading
+        let voxel_renderer = VoxelRenderer::new(
+            Arc::clone(&device),
+            Arc::clone(&queue),
+            &camera_bind_group_layout,
+            Arc::clone(&shader_hot_reload),
+        );
+        
+        // Initialize atmosphere renderer with hot reloading
+        let mut atmosphere_renderer = AtmosphereRenderer::new(
+            Arc::clone(&device),
+            Arc::clone(&queue),
+            &camera_bind_group_layout,
+        );
+        
+        // Load atmosphere shader using hot reload
+        let atmosphere_shader = shader_hot_reload.get_shader("atmosphere.wgsl");
+        atmosphere_renderer.update_shader(&atmosphere_shader);
+        
+        // Create atmosphere output bind group
+        let atmosphere_output_bind_group = atmosphere_renderer.create_output_bind_group(
+            &device, 
+            &render_texture_view
+        );
+        
+        // Initialize ImGui
+        let imgui = Self::init_imgui(&device, &queue, &window, surface_config.format);
+        
+        Self {
+            surface,
+            surface_config,
+            adapter,
+            device,
+            queue,
+            shader_hot_reload,
+            camera_buffer,
+            camera_bind_group_layout,
+            camera_bind_group,
+            depth_texture,
+            depth_texture_view,
+            models: Vec::new(),
+            render_texture_bind_group_layout,
+            render_texture,
+            render_texture_view,
+            sampler,
+            bloom_effect,
+            post_process_texture,
+            post_process_texture_view,
+            color_correction_effect,
+            final_render_pipeline,
+            final_vertex_buffer,
+            final_texture_bind_group,
+            time: Instant::now(),
+            hidpi_factor: window.scale_factor(),
+            imgui,
+            render_mode: RenderMode::Atmosphere, // Default to atmosphere rendering
+            voxel_renderer,
+            atmosphere_renderer,
+            atmosphere_output_bind_group,
+        }
+    }
+    
+    /// Initialize core WGPU components
+    async fn init_wgpu_core(window: Arc<Window>) -> (
+        wgpu::Surface<'window>, 
+        wgpu::SurfaceConfiguration, 
+        wgpu::Adapter,
+        Arc<wgpu::Device>,
+        Arc<wgpu::Queue>
+    ) {
         let instance = wgpu::Instance::default();
         let surface = instance.create_surface(Arc::clone(&window)).unwrap();
+        
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::default(),
@@ -229,446 +402,41 @@ impl<'window> WgpuCtx<'window> {
         let width = size.width.max(1);
         let height = size.height.max(1);
         let mut surface_config = surface.get_default_config(&adapter, width, height).unwrap();
-        surface_config.present_mode = wgpu::PresentMode::Fifo; // Explicitly enable vsync
+        surface_config.present_mode = wgpu::PresentMode::Fifo;
         surface.configure(&device, &surface_config);
-
-        // Vertex and index buffers for rendering a full-screen quad
-        let vertex_buffer = device.create_buffer_init(&BufferInitDescriptor {
-            label: None,
-            contents: bytemuck::cast_slice(&VERTICES_SQUARE),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-        let vertex_index_buffer = device.create_buffer_init(&BufferInitDescriptor {
-            label: None,
-            contents: bytemuck::cast_slice(&INDICES_SQUARE),
-            usage: wgpu::BufferUsages::INDEX,
-        });
-
-        // Non repeat sampler for render texture
-        let sampler = Arc::new(device.create_sampler(&SamplerDescriptor {
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        }));
-
-        // Shared sampler for texture sampling
-        let texture_sampler = Arc::new(device.create_sampler(&SamplerDescriptor {
-            address_mode_u: wgpu::AddressMode::Repeat,
-            address_mode_v: wgpu::AddressMode::Repeat,
-            address_mode_w: wgpu::AddressMode::Repeat,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        }));
-
-        // Load multiple textures (emulating Shadertoy iChannels)
-        // Noise0 texture
-        let rgb_noise_img = RgbaImg::new("./assets/images/textures/rgbnoise.png").unwrap();
-        let rgb_noise_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Rgb noise Texture"),
-            size: wgpu::Extent3d {
-                width: rgb_noise_img.width,
-                height: rgb_noise_img.height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &rgb_noise_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &rgb_noise_img.bytes,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(4 * rgb_noise_img.width),
-                rows_per_image: Some(rgb_noise_img.height),
-            },
-            wgpu::Extent3d {
-                width: rgb_noise_img.width,
-                height: rgb_noise_img.height,
-                depth_or_array_layers: 1,
-            },
-        );
-        let rgb_noise_texture_view =
-            rgb_noise_texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-        let gray_noise_img = RgbaImg::new("./assets/images/textures/graynoise.png").unwrap();
-        let gray_noise_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Gray noise Texture"),
-            size: wgpu::Extent3d {
-                width: gray_noise_img.width,
-                height: gray_noise_img.height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &gray_noise_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &gray_noise_img.bytes,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(4 * gray_noise_img.width),
-                rows_per_image: Some(gray_noise_img.height),
-            },
-            wgpu::Extent3d {
-                width: gray_noise_img.width,
-                height: gray_noise_img.height,
-                depth_or_array_layers: 1,
-            },
-        );
-        let gray_noise_texture_view =
-            gray_noise_texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-        // Gray noise cube texture (3D)
-        let gray_noise_cube_full =
-            std::fs::read("./assets/images/textures/graynoise_32x32x32_cube.bin")
-                .expect("Failed to read noise1 binary file");
-        let gray_noise_cube_data = &gray_noise_cube_full[20..20 + 32 * 32 * 32];
-        assert_eq!(
-            gray_noise_cube_data.len(),
-            32 * 32 * 32,
-            "Noise1 data size mismatch; expected 32768 bytes"
-        );
-
-        let gray_noise_cube_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Noise1 Texture"),
-            size: wgpu::Extent3d {
-                width: 32,
-                height: 32,
-                depth_or_array_layers: 32,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D3,
-            format: wgpu::TextureFormat::R8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &gray_noise_cube_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            gray_noise_cube_data,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(32), // 32 texels * 1 byte per texel
-                rows_per_image: Some(32),
-            },
-            wgpu::Extent3d {
-                width: 32,
-                height: 32,
-                depth_or_array_layers: 32,
-            },
-        );
-
-        let gray_noise_cube_texture_view =
-            gray_noise_cube_texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-        // Grain texture
-        let grain_img = RgbaImg::new("./assets/images/textures/grain.png").unwrap();
-        let grain_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Grain Texture"),
-            size: wgpu::Extent3d {
-                width: grain_img.width,
-                height: grain_img.height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &grain_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &grain_img.bytes,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(4 * grain_img.width),
-                rows_per_image: Some(grain_img.height),
-            },
-            wgpu::Extent3d {
-                width: grain_img.width,
-                height: grain_img.height,
-                depth_or_array_layers: 1,
-            },
-        );
-        let grain_texture_view = grain_texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-        // Dirt texture
-        let dirt_img = RgbaImg::new("./assets/images/textures/mud.png").unwrap();
-        let dirt_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Dirt Texture"),
-            size: wgpu::Extent3d {
-                width: dirt_img.width,
-                height: dirt_img.height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &dirt_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &dirt_img.bytes,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(4 * dirt_img.width),
-                rows_per_image: Some(dirt_img.height),
-            },
-            wgpu::Extent3d {
-                width: dirt_img.width,
-                height: dirt_img.height,
-                depth_or_array_layers: 1,
-            },
-        );
-        let dirt_texture_view = dirt_texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-        // Pebble texture
-        let pebble_img = RgbaImg::new("./assets/images/textures/pebble.png").unwrap();
-        let pebble_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Dirt Texture"),
-            size: wgpu::Extent3d {
-                width: dirt_img.width,
-                height: dirt_img.height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &pebble_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &pebble_img.bytes,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(4 * pebble_img.width),
-                rows_per_image: Some(pebble_img.height),
-            },
-            wgpu::Extent3d {
-                width: pebble_img.width,
-                height: pebble_img.height,
-                depth_or_array_layers: 1,
-            },
-        );
-        let pebble_texture_view =
-            pebble_texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-        // Terrain bind group layout for multiple textures
-        let terrain_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D3,
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 3,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 4,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 5,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 6,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                ],
-                label: Some("terrain_bind_group_layout"),
-            });
-
-        // Terrain bind group to bind textures and sampler
-        let terrain_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &terrain_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&rgb_noise_texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&gray_noise_texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&gray_noise_cube_texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::TextureView(&grain_texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: wgpu::BindingResource::TextureView(&dirt_texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: wgpu::BindingResource::TextureView(&pebble_texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 6,
-                    resource: wgpu::BindingResource::Sampler(&texture_sampler),
-                },
-            ],
-            label: Some("terrain_bind_group"),
-        });
-
-        // Create the bind group layout
-        let voxel_settings_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("Voxel Settings Bind Group Layout"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT, //  | wgpu::ShaderStages::VERTEX  | wgpu::ShaderStages::COMPUTE
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }],
-            });
-
-        // Create the default settings
-        let voxel_settings = Settings::default();
-
-        // Create the buffer
-        let voxel_settings_buffer = voxel_settings.create_buffer(&device);
-
-        // Create the bind group
-        let voxel_settings_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Voxel Settings Bind Group"),
-            layout: &voxel_settings_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: voxel_settings_buffer.as_entire_binding(),
-            }],
-        });
-
-        // Camera uniform and bind group
+        
+        (surface, surface_config, adapter, device, queue)
+    }
+    
+    /// Create camera uniform buffer and bind group
+    fn create_camera_resources(
+        device: &wgpu::Device,
+    ) -> (wgpu::Buffer, wgpu::BindGroupLayout, wgpu::BindGroup) {
         let camera_uniform = CameraUniform {
             view_proj: Matrix4::identity().into(),
             ..Default::default()
         };
+        
         let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Camera Buffer"),
             contents: bytemuck::cast_slice(&[camera_uniform]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
-        let camera_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }],
-                label: Some("camera_bind_group_layout"),
-            });
+        
+        let camera_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+            label: Some("camera_bind_group_layout"),
+        });
+        
         let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout: &camera_bind_group_layout,
             entries: &[wgpu::BindGroupEntry {
@@ -677,35 +445,70 @@ impl<'window> WgpuCtx<'window> {
             }],
             label: Some("camera_bind_group"),
         });
+        
+        (camera_buffer, camera_bind_group_layout, camera_bind_group)
+    }
 
-        // Render pipeline setup
-        let render_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: None,
-                bind_group_layouts: &[
-                    &camera_bind_group_layout,
-                    &terrain_bind_group_layout,
-                    &voxel_settings_bind_group_layout,
-                ],
-                push_constant_ranges: &[],
-            });
-        let render_pipeline = create_pipeline(
-            &device,
-            wgpu::TextureFormat::Rgba32Float,
-            &render_pipeline_layout,
-        );
-
-        // Depth texture
-        let (depth_texture, depth_texture_view) =
-            Self::create_depth_texture(&device, &surface_config);
-
-        // Texture bind group layout for post-processing
-        let texture_bind_group_layout = Arc::new(device.create_bind_group_layout(
+    /// Creates a depth texture for depth testing
+    fn create_depth_texture(
+        device: &wgpu::Device,
+        config: &wgpu::SurfaceConfiguration,
+    ) -> (wgpu::Texture, wgpu::TextureView) {
+        let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Depth Texture"),
+            size: wgpu::Extent3d {
+                width: config.width,
+                height: config.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Depth32Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        
+        let depth_texture_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        
+        (depth_texture, depth_texture_view)
+    }
+    
+    /// Creates a color texture with the specified format
+    fn create_color_texture(
+        device: &wgpu::Device,
+        config: &wgpu::SurfaceConfiguration,
+        label: &str,
+        format: wgpu::TextureFormat,
+    ) -> (wgpu::Texture, wgpu::TextureView) {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d {
+                width: config.width,
+                height: config.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        
+        let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        
+        (texture, texture_view)
+    }
+    
+    /// Creates a texture bind group layout
+    fn create_texture_bind_group_layout(device: &wgpu::Device) -> Arc<wgpu::BindGroupLayout> {
+        Arc::new(device.create_bind_group_layout(
             &wgpu::BindGroupLayoutDescriptor {
                 entries: &[
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        visibility: wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::Texture {
                             multisampled: false,
                             view_dimension: wgpu::TextureViewDimension::D2,
@@ -715,195 +518,170 @@ impl<'window> WgpuCtx<'window> {
                     },
                     wgpu::BindGroupLayoutEntry {
                         binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        visibility: wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                         count: None,
                     },
                 ],
                 label: Some("texture_bind_group_layout"),
             },
-        ));
-
-        // Render texture for intermediate rendering
-        let render_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Render Texture"),
-            size: wgpu::Extent3d {
-                width: surface_config.width,
-                height: surface_config.height,
-                depth_or_array_layers: 1,
+        ))
+    }
+    
+    /// Creates a render pipeline for final conversion with a specific shader
+    fn create_final_render_pipeline_with_shader(
+        device: &wgpu::Device,
+        texture_bind_group_layout: &wgpu::BindGroupLayout,
+        surface_format: wgpu::TextureFormat,
+        shader: &wgpu::ShaderModule,
+    ) -> (wgpu::RenderPipeline, wgpu::Buffer) {
+        // Create pipeline layout
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Final Render Pipeline Layout"),
+            bind_group_layouts: &[texture_bind_group_layout],
+            push_constant_ranges: &[],
+        });
+        
+        // Create vertex buffer with a fullscreen quad
+        let vertices = [
+            // x, y, u, v
+            -1.0f32, -1.0, 0.0, 0.0,  // Bottom-left corner, texture UV at (0,0)
+            1.0, -1.0, 1.0, 0.0,     // Bottom-right corner, texture UV at (1,0)
+            1.0, 1.0, 1.0, 1.0,      // Top-right corner, texture UV at (1,1)
+                        
+            -1.0, -1.0, 0.0, 0.0,     // Bottom-left corner again
+            1.0, 1.0, 1.0, 1.0,      // Top-right corner again
+            -1.0, 1.0, 0.0, 1.0,      // Top-left corner, texture UV at (0,1)
+        ];
+        
+        let vertex_buffer = device.create_buffer_init(&BufferInitDescriptor {
+            label: Some("Final Render Vertex Buffer"),
+            contents: bytemuck::cast_slice(&vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        
+        // Create pipeline
+        let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Final Render Pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: shader,
+                entry_point: Some("vs_main"),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: 4 * 4, // 4 floats, 4 bytes each
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[
+                        // Position
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 0,
+                            shader_location: 0,
+                        },
+                        // UV
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 2 * 4, // 2 floats, 4 bytes each
+                            shader_location: 1,
+                        },
+                    ],
+                }],
+                compilation_options: PipelineCompilationOptions::default()
             },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba32Float,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::STORAGE_BINDING,
-            view_formats: &[],
-        });
-        let render_texture_view =
-            render_texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-        // Bloom effect setup
-        let bloom_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Bloom Shader"),
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("bloom.wgsl"))),
-        });
-        let bloom_effect = BloomEffect::new(
-            Arc::clone(&device),
-            Arc::clone(&queue),
-            Arc::clone(&texture_bind_group_layout),
-            Arc::clone(&sampler),
-            surface_config.width,
-            surface_config.height,
-            &render_texture_view,
-            &bloom_shader,
-        );
-
-        // Post-process texture
-        let post_process_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Post Process Texture"),
-            size: wgpu::Extent3d {
-                width: surface_config.width,
-                height: surface_config.height,
-                depth_or_array_layers: 1,
+            fragment: Some(wgpu::FragmentState {
+                module: shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: surface_format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: PipelineCompilationOptions::default()
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: Some(wgpu::Face::Back),
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
             },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba32Float,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::STORAGE_BINDING,
-            view_formats: &[],
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview: None,
+            cache: None
         });
-        let post_process_texture_view =
-            post_process_texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-        // Color correction effect
-        let color_correction_effect = ColorCorrectionEffect::new(
-            Arc::clone(&device),
-            Arc::clone(&queue),
-            &post_process_texture_view,
-            Arc::clone(&sampler),
-            surface_config.format,
-        );
-
+        
+        (render_pipeline, vertex_buffer)
+    }
+    
+    // Original method kept for backward compatibility, delegates to the version that takes a shader
+    fn create_final_render_pipeline(
+        device: &wgpu::Device,
+        texture_bind_group_layout: &wgpu::BindGroupLayout,
+        surface_format: wgpu::TextureFormat,
+    ) -> (wgpu::RenderPipeline, wgpu::Buffer) {
+        // Create shader for the final pass
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Final Conversion Shader"),
+            source: ShaderSource::Wgsl(Cow::Borrowed(include_str!("shaders/final_conversion.wgsl"))),
+        });
+        
+        Self::create_final_render_pipeline_with_shader(device, texture_bind_group_layout, surface_format, &shader)
+    }
+    
+    /// Initialize ImGui
+    fn init_imgui(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        window: &Window,
+        format: wgpu::TextureFormat,
+    ) -> ImguiState {
         let hidpi_factor = window.scale_factor();
-
-        let imgui = {
-            let mut context = imgui::Context::create();
-            let mut platform = imgui_winit_support::WinitPlatform::new(&mut context);
-            platform.attach_window(
-                context.io_mut(),
-                &window,
-                imgui_winit_support::HiDpiMode::Default,
-            );
-            context.set_ini_filename(None);
-
-            let font_size = (13.0 * hidpi_factor) as f32;
-            context.io_mut().font_global_scale = (1.0 / hidpi_factor) as f32;
-
-            context.fonts().add_font(&[FontSource::DefaultFontData {
-                config: Some(imgui::FontConfig {
-                    oversample_h: 1,
-                    pixel_snap_h: true,
-                    size_pixels: font_size,
-                    ..Default::default()
-                }),
-            }]);
-
-            //
-            // Set up dear imgui wgpu renderer
-            //
-            let clear_color = wgpu::Color {
-                r: 0.1,
-                g: 0.2,
-                b: 0.3,
-                a: 1.0,
-            };
-
-            let renderer_config = RendererConfig {
-                texture_format: surface_config.format,
+        let mut context = imgui::Context::create();
+        let mut platform = WinitPlatform::new(&mut context);
+        platform.attach_window(
+            context.io_mut(),
+            window,
+            imgui_winit_support::HiDpiMode::Default
+        );
+        
+        context.set_ini_filename(None);
+        let font_size = (13.0 * hidpi_factor) as f32;
+        context.io_mut().font_global_scale = (1.0 / hidpi_factor) as f32;
+        context.fonts().add_font(&[FontSource::DefaultFontData {
+            config: Some(imgui::FontConfig {
+                oversample_h: 1,
+                pixel_snap_h: true,
+                size_pixels: font_size,
                 ..Default::default()
-            };
-
-            let renderer = Renderer::new(&mut context, &device, &queue, renderer_config);
-            let last_frame = Instant::now();
-            let last_cursor = None;
-            let demo_open = true;
-
-            ImguiState {
-                context,
-                platform,
-                renderer,
-                clear_color,
-                demo_open,
-                last_frame,
-                last_cursor,
-            }
+            }),
+        }]);
+        
+        let clear_color = wgpu::Color { r: 0.1, g: 0.2, b: 0.3, a: 1.0 };
+        let renderer_config = RendererConfig {
+            texture_format: format,
+            ..Default::default()
         };
-
-        WgpuCtx {
-            surface,
-            surface_config,
-            adapter,
-            device,
-            queue,
-            render_pipeline,
-            vertex_buffer,
-            vertex_index_buffer,
-            texture: gray_noise_cube_texture.clone(), // Primary texture for compatibility
-            texture_size: wgpu::Extent3d {
-                width: 32,
-                height: 32,
-                depth_or_array_layers: 32,
-            },
-            texture_sampler,
-            sampler,
-            bind_group: terrain_bind_group.clone(),
-            camera_buffer,
-            camera_bind_group,
-            depth_texture,
-            depth_texture_view,
-            models: Vec::new(),
-            texture_bind_group_layout,
-            render_texture,
-            render_texture_view,
-            bloom_effect,
-            post_process_texture,
-            post_process_texture_view,
-            color_correction_effect,
-            rgb_noise_texture,
-            gray_noise_cube_texture,
-            grain_texture,
-            dirt_texture,
-            pebble_texture,
-            terrain_bind_group_layout,
-            terrain_bind_group,
-            time: Instant::now(),
-            imgui,
-            hidpi_factor,
-            voxel_settings,
-            voxel_settings_buffer,
-            voxel_settings_bind_group,
-            time_of_day: 12.0,
-            sun_incline: 0.5, // In the middle of the sky
+        
+        let renderer = Renderer::new(&mut context, device, queue, renderer_config);
+        
+        ImguiState {
+            context,
+            platform,
+            renderer,
+            clear_color,
+            demo_open: true,
+            last_frame: Instant::now(),
+            last_cursor: None,
         }
     }
 
-    pub fn load_model<P: AsRef<Path>>(&mut self, path: P) -> Option<usize> {
-        if let Some(mut model) = Model::load(&self.device, &self.queue, path) {
-            model.create_bind_groups(&self.device, &self.texture_bind_group_layout);
-            model.upload_textures(&self.queue);
-            let index = self.models.len();
-            self.models.push(model);
-            Some(index)
-        } else {
-            None
-        }
-    }
-
+    /// Updates the camera uniform buffer
     pub fn update_camera_uniform(
         &mut self,
         view_proj: Matrix4<f32>,
@@ -917,353 +695,392 @@ impl<'window> WgpuCtx<'window> {
             view: view.into(),
             position,
             time: self.time.elapsed().as_secs_f32(),
+            resolution: [self.surface_config.width as f32, self.surface_config.height as f32],
+            _padding: [0.0; 2],
         };
+        
         self.queue.write_buffer(
             &self.camera_buffer,
             0,
             bytemuck::cast_slice(&[camera_uniform]),
         );
     }
-    /// Synchronous constructor that blocks on async initialization
-    pub fn new(window: Arc<Window>) -> WgpuCtx<'window> {
-        pollster::block_on(WgpuCtx::new_async(window))
-    }
 
-    /// Resizes the rendering surfaces and updates related resources
+    /// Resizes rendering surfaces
     pub fn resize(&mut self, new_size: (u32, u32)) {
         let (width, height) = new_size;
         self.surface_config.width = width.max(1);
         self.surface_config.height = height.max(1);
         self.surface.configure(&self.device, &self.surface_config);
 
-        let (depth_texture, depth_texture_view) =
+        // Recreate depth texture
+        let (depth_texture, depth_texture_view) = 
             Self::create_depth_texture(&self.device, &self.surface_config);
         self.depth_texture = depth_texture;
         self.depth_texture_view = depth_texture_view;
 
-        self.render_texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Render Texture"),
-            size: wgpu::Extent3d {
-                width: self.surface_config.width,
-                height: self.surface_config.height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba32Float,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::STORAGE_BINDING,
-            view_formats: &[],
-        });
-        self.render_texture_view = self
-            .render_texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
+        // Recreate render texture (Rgba32Float)
+        let (render_texture, render_texture_view) = 
+            Self::create_color_texture(&self.device, &self.surface_config, "Render Texture", wgpu::TextureFormat::Rgba32Float);
+        self.render_texture = render_texture;
+        self.render_texture_view = render_texture_view;
 
-        self.post_process_texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Post Process Texture"),
-            size: wgpu::Extent3d {
-                width: self.surface_config.width,
-                height: self.surface_config.height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba32Float,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::STORAGE_BINDING,
-            view_formats: &[],
-        });
-        self.post_process_texture_view = self
-            .post_process_texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
+        // Recreate post-process texture (Rgba32Float)
+        let (post_process_texture, post_process_texture_view) = 
+            Self::create_color_texture(&self.device, &self.surface_config, "Post Process Texture", wgpu::TextureFormat::Rgba32Float);
+        self.post_process_texture = post_process_texture;
+        self.post_process_texture_view = post_process_texture_view;
 
-        self.bloom_effect.resize(
-            self.surface_config.width,
-            self.surface_config.height,
-            &self.render_texture_view,
+        // Update final_texture_bind_group to point to the render texture
+        self.final_texture_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &self.render_texture_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&self.render_texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+            ],
+            label: Some("final_texture_bind_group"),
+        });
+
+        // Update atmosphere output bind group
+        self.atmosphere_output_bind_group = self.atmosphere_renderer.create_output_bind_group(
+            &self.device, 
+            &self.render_texture_view
         );
-        self.color_correction_effect
-            .resize(&self.post_process_texture_view);
+
+        // Update post-processing effects
+        self.bloom_effect.resize(self.surface_config.width, self.surface_config.height, &self.render_texture_view);
+        self.color_correction_effect.resize(&self.post_process_texture_view);
+    }
+    
+    // Add a method to check for shader updates and recreate pipelines
+    pub fn check_shader_updates(&mut self) {
+        let updated_shaders = self.shader_hot_reload.check_for_updates();
+        
+        for shader_name in &updated_shaders {
+            match shader_name.as_str() {
+                "bloom.wgsl" => {
+                    // Reload bloom shader and recreate bloom effect
+                    let bloom_shader = self.shader_hot_reload.get_shader("bloom.wgsl");
+                    self.bloom_effect = BloomEffect::new(
+                        Arc::clone(&self.device),
+                        Arc::clone(&self.queue),
+                        Arc::clone(&self.render_texture_bind_group_layout),
+                        Arc::clone(&self.sampler),
+                        self.surface_config.width,
+                        self.surface_config.height,
+                        &self.render_texture_view,
+                        &bloom_shader,
+                    );
+                    println!("Reloaded bloom shader");
+                },
+                "color_correction.wgsl" => {
+                    // Recreate color correction effect
+                    let color_correction_shader = self.shader_hot_reload.get_shader("color_correction.wgsl");
+                    self.color_correction_effect = ColorCorrectionEffect::new(
+                        Arc::clone(&self.device),
+                        Arc::clone(&self.queue),
+                        &self.post_process_texture_view,
+                        Arc::clone(&self.sampler),
+                        Some(&color_correction_shader),
+                    );
+                    println!("Reloaded color correction shader");
+                },
+                "final_conversion.wgsl" => {
+                    // Reload final conversion shader
+                    let final_shader = self.shader_hot_reload.get_shader("final_conversion.wgsl");
+                    let (final_render_pipeline, _) = 
+                        Self::create_final_render_pipeline_with_shader(
+                            &self.device, 
+                            &self.render_texture_bind_group_layout,
+                            self.surface_config.format,
+                            &final_shader,
+                        );
+                    self.final_render_pipeline = final_render_pipeline;
+                    println!("Reloaded final conversion shader");
+                },
+                "atmosphere.wgsl" => {
+                    // Reload atmosphere compute shader
+                    let atmosphere_shader = self.shader_hot_reload.get_shader("atmosphere.wgsl");
+                    self.atmosphere_renderer.update_shader(&atmosphere_shader);
+                    println!("Reloaded atmosphere compute shader");
+                },
+                _ => {}
+            }
+        }
+        
+        // Check for voxel shader updates in the VoxelRenderer
+        self.voxel_renderer.check_shader_updates();
     }
 
-    /// Renders the scene with post-processing effects
+    /// Renders the scene
     pub fn draw(&mut self, world: &mut World, window: &Window) {
-        let surface_texture = self
-            .surface
+        // Check for shader updates before rendering
+        self.check_shader_updates();
+        
+        let surface_texture = self.surface
             .get_current_texture()
             .expect("Failed to acquire next swap chain texture");
+            
         let surface_texture_view = surface_texture
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self
-            .device
+            
+        let mut encoder = self.device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-
-        // Render the scene to an intermediate texture
+    
+        // Render scene based on the selected rendering mode
+        match self.render_mode {
+            RenderMode::Voxel => {
+                // Render voxel scene to render_texture
+                {
+                    let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("Voxel Render Pass"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &self.render_texture_view,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                    });
+                    
+                    // Set camera bind group (index 0)
+                    render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+                    
+                    // Render voxels
+                    self.voxel_renderer.render(&mut render_pass);
+                }
+            },
+            RenderMode::Atmosphere => {
+                // Render atmosphere directly to render_texture using compute shader
+                {
+                    let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                        label: Some("Atmosphere Compute Pass"),
+                        timestamp_writes: None,
+                    });
+                    
+                    compute_pass.set_bind_group(1, &self.camera_bind_group, &[]); // Camera is at binding 1
+                    self.atmosphere_renderer.render(
+                        &mut compute_pass, 
+                        &self.atmosphere_output_bind_group,
+                        self.surface_config.width,
+                        self.surface_config.height
+                    );
+                }
+            }
+        }
+    
+        // Apply post-processing effects (all on Rgba32Float textures)
+        self.bloom_effect.render(&mut encoder, &self.render_texture_view);
+        self.bloom_effect.apply(&mut encoder, &self.post_process_texture_view, &self.render_texture_view);
+        
+        self.color_correction_effect.update_uniform(ColorCorrectionUniform {
+            brightness: 1.0,
+            contrast: 1.0,
+            saturation: 1.0,
+        });
+        
+        self.color_correction_effect.apply(&mut encoder, &self.render_texture_view);
+    
+        // Final render pass: Convert from Rgba32Float directly to swapchain
         {
-            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Scene Render Pass"),
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Final Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.render_texture_view,
+                    view: &surface_texture_view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.0,
-                            g: 0.0,
-                            b: 0.0,
-                            a: 1.0,
-                        }),
+                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.depth_texture_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: None,
-                }),
+                depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-
-            rpass.set_pipeline(&self.render_pipeline);
-            rpass.set_bind_group(0, &self.camera_bind_group, &[]);
-            rpass.set_bind_group(1, &self.terrain_bind_group, &[]);
-            rpass.set_bind_group(2, &self.voxel_settings_bind_group, &[]);
-            rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            rpass.set_index_buffer(
-                self.vertex_index_buffer.slice(..),
-                wgpu::IndexFormat::Uint16,
-            );
-            rpass.draw_indexed(0..INDICES_SQUARE.len() as u32, 0, 0..1);
+            
+            render_pass.set_pipeline(&self.final_render_pipeline);
+            render_pass.set_bind_group(0, &self.final_texture_bind_group, &[]);
+            render_pass.set_vertex_buffer(0, self.final_vertex_buffer.slice(..));
+            render_pass.draw(0..6, 0..1); // Draw two triangles (6 vertices)
         }
-
-        // Apply post-processing effects
-        self.bloom_effect
-            .render(&mut encoder, &self.render_texture_view);
-        self.bloom_effect.apply(
-            &mut encoder,
-            &self.post_process_texture_view,
-            &self.render_texture_view,
-        );
-        self.color_correction_effect
-            .update_uniform(ColorCorrectionUniform {
-                brightness: 1.0,
-                contrast: 1.0,
-                saturation: 1.0,
-            });
-        self.color_correction_effect
-            .apply(&mut encoder, &surface_texture_view);
-
-        // Setup UI first
-        // Update time delta
+    
+        // Update and render ImGui
+        self.render_imgui(&mut encoder, &surface_texture_view, world, window);
+    
+        self.queue.submit(Some(encoder.finish()));
+        surface_texture.present();
+    }
+    
+    /// Update and render ImGui UI
+    fn render_imgui(
+        &mut self, 
+        encoder: &mut wgpu::CommandEncoder, 
+        texture_view: &wgpu::TextureView,
+        world: &mut World,
+        window: &Window
+    ) {
         let now = Instant::now();
-        self.imgui
-            .context
-            .io_mut()
-            .update_delta_time(now - self.imgui.last_frame);
+        self.imgui.context.io_mut().update_delta_time(now - self.imgui.last_frame);
         self.imgui.last_frame = now;
-
-        // Prepare frame
-        self.imgui
-            .platform
+        
+        self.imgui.platform
             .prepare_frame(self.imgui.context.io_mut(), window)
             .expect("Failed to prepare ImGui frame");
+            
         let ui = self.imgui.context.frame();
-
-        // Build your UI here
-        {
-            let mut modified = false;
-            let window = ui.window("Settings");
-            window
-                .size([300.0, 200.0], Condition::FirstUseEver)
-                .always_auto_resize(true)
-                .build(|| {
-                    if ui.button("Set Camera Position Origin") {
-                        for (_, (transform, camera, controller)) in
-                            world
-                                .query_mut::<(&mut Transform, &mut Camera, &mut CameraController)>()
-                        {
-                            transform.position = Point3::new(6.0, 2.2, 6.0);
+    
+        // ImGui UI controls
+        ui.window("Settings")
+            .size([300.0, 400.0], Condition::FirstUseEver)
+            .always_auto_resize(true)
+            .build(|| {
+                // Camera controls
+                if ui.button("Set Camera Position Origin") {
+                    for (_, (transform, _, _)) in world.query_mut::<(&mut Transform, &mut Camera, &mut CameraController)>() {
+                        transform.position = Point3::new(6.0, 2.2, 6.0);
+                    }
+                }
+                
+                for (_, (transform, _, _)) in world.query_mut::<(&mut Transform, &mut Camera, &mut CameraController)>() {
+                    let mut pos: [f32; 3] = transform.position.into();
+                    if ui.input_float3("Camera Transform", &mut pos).build() {
+                        transform.position = pos.into();
+                    }
+                }
+                
+                // Render mode selection
+                ui.separator();
+                ui.text("Render Mode");
+                
+                // let mut is_voxel = matches!(self.render_mode, RenderMode::Voxel);
+                // if ui.radio_button("Voxel", &mut is_voxel, is_voxel) && !is_voxel {
+                //     self.render_mode = RenderMode::Voxel;
+                //     is_voxel = true;
+                // }
+                // if ui.radio_button("Atmosphere", &mut is_voxel, !is_voxel) && is_voxel {
+                //     self.render_mode = RenderMode::Atmosphere;
+                //     is_voxel = false;
+                // }
+                
+                // Show settings based on the current rendering mode
+                match self.render_mode {
+                    RenderMode::Voxel => {
+                        // Voxel settings controls
+                        ui.separator();
+                        ui.text("Voxel Settings");
+                        
+                        // Visualization options
+                        let mut show_normals = self.voxel_renderer.voxel_settings.show_normals != 0;
+                        if ui.checkbox("Show Normals", &mut show_normals) {
+                            self.voxel_renderer.voxel_settings.show_normals = if show_normals { 1 } else { 0 };
+                            self.voxel_renderer.update_settings_buffer();
                         }
-                    }
-                    for (_, (transform, camera, controller)) in
-                        world.query_mut::<(&mut Transform, &mut Camera, &mut CameraController)>()
-                    {
-                        let mut pos: [f32; 3] = transform.position.into();
-                        if ui.input_float3("Camera Transform", &mut pos).build() {
-                            transform.position = pos.into();
+                        
+                        let mut show_steps = self.voxel_renderer.voxel_settings.show_steps != 0;
+                        if ui.checkbox("Show Ray Steps", &mut show_steps) {
+                            self.voxel_renderer.voxel_settings.show_steps = if show_steps { 1 } else { 0 };
+                            self.voxel_renderer.update_settings_buffer();
                         }
+                        
+                        
+                    },
+                    RenderMode::Atmosphere => {
+                        // Atmosphere settings controls
+                        ui.separator();
+                        ui.text("Atmosphere Settings");
+                        
+                        // Add atmosphere-specific settings here when needed
+                        ui.text("No configurable atmosphere settings available yet.");
                     }
-
-                    if ui.slider("Voxel Level", 1, 8, &mut self.voxel_settings.voxel_level) {
-                        self.voxel_settings.update_voxel_size();
-                        modified = true;
-                    }
-                    if ui
-                        .input_float("Max Ray Distance", &mut self.voxel_settings.max_dist)
-                        .build()
-                    {
-                        modified = true;
-                    }
-
-                    if ui
-                        .input_float("Water Height", &mut self.voxel_settings.water_height)
-                        .build()
-                    {
-                        self.voxel_settings.max_water_height = self.voxel_settings.water_height;
-                        modified = true;
-                    }
-                    if ui
-                        .input_float("Max terrain Height", &mut self.voxel_settings.max_height)
-                        .build()
-                    {
-                        modified = true;
-                    }
-
-                    if ui.slider("Sun Incline", 0.0, 1.0, &mut self.sun_incline) {
-                        self.voxel_settings.light_direction =
-                            calculate_sun_direction(self.time_of_day, self.sun_incline);
-                        modified = true;
-                    }
-                    if ui.slider("Time of Day", 0.0, 24.0, &mut self.time_of_day) {
-                        self.voxel_settings.light_direction =
-                            calculate_sun_direction(self.time_of_day, self.sun_incline);
-                        modified = true;
-                    }
-
-                    // // Add input field to test keyboard capture
-                    // let mut test_input = String::new();
-                    // ui.input_text("Test Input", &mut test_input).build();
-
-                    // // Debug info
-                    // ui.text(format!(
-                    //     "ImGui wants capture: Mouse={}, Keyboard={}",
-                    //     ui.io().want_capture_mouse,
-                    //     ui.io().want_capture_keyboard
-                    // ));
-                    // ui.separator();
-                });
-            // // Show demo window (useful while developing)
-            // ui.show_demo_window(&mut imgui.demo_open);
-
-            if modified {
-                self.queue.write_buffer(
-                    &self.voxel_settings_buffer,
-                    0,
-                    bytemuck::cast_slice(&[self.voxel_settings]),
-                );
-            }
-        }
-
-        // Update cursor if changed
+                }
+                
+                // Add shader hot reload section to UI
+                ui.separator();
+                ui.text("Shader Hot Reloading");
+                if ui.button("Force Reload All Shaders") {
+                    // Force reload all known shaders
+                    let bloom_shader = self.shader_hot_reload.get_shader("bloom.wgsl");
+                    self.bloom_effect = BloomEffect::new(
+                        Arc::clone(&self.device),
+                        Arc::clone(&self.queue),
+                        Arc::clone(&self.render_texture_bind_group_layout),
+                        Arc::clone(&self.sampler),
+                        self.surface_config.width,
+                        self.surface_config.height,
+                        &self.render_texture_view,
+                        &bloom_shader,
+                    );
+                    
+                    let color_correction_shader = self.shader_hot_reload.get_shader("color_correction.wgsl");
+                    self.color_correction_effect = ColorCorrectionEffect::new(
+                        Arc::clone(&self.device),
+                        Arc::clone(&self.queue),
+                        &self.post_process_texture_view,
+                        Arc::clone(&self.sampler),
+                        Some(&color_correction_shader),
+                    );
+                    
+                    let final_shader = self.shader_hot_reload.get_shader("final_conversion.wgsl");
+                    let (final_render_pipeline, _) = 
+                        Self::create_final_render_pipeline_with_shader(
+                            &self.device, 
+                            &self.render_texture_bind_group_layout,
+                            self.surface_config.format,
+                            &final_shader,
+                        );
+                    self.final_render_pipeline = final_render_pipeline;
+                    
+                    // Force reload voxel shader
+                    let voxel_shader = self.shader_hot_reload.get_shader("voxel.wgsl");
+                    let render_pipeline = VoxelRenderer::create_pipeline(
+                        &self.device,
+                        &self.voxel_renderer.pipeline_layout,
+                        &voxel_shader,
+                    );
+                    self.voxel_renderer.render_pipeline = render_pipeline;
+                    
+                    // Force reload atmosphere shader
+                    let atmosphere_shader = self.shader_hot_reload.get_shader("atmosphere.wgsl");
+                    self.atmosphere_renderer.update_shader(&atmosphere_shader);
+                    
+                    println!("Forced reload of all shaders");
+                }
+            });
+    
         if self.imgui.last_cursor != ui.mouse_cursor() {
             self.imgui.last_cursor = ui.mouse_cursor();
             self.imgui.platform.prepare_render(ui, window);
         }
-
-        // Render ImGui UI on top of the scene
-        self.imgui
-            .renderer
-            .render(
-                self.imgui.context.render(),
-                &self.queue,
-                &self.device,
-                &mut encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("ImGui Render Pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &surface_texture_view,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Load, // Important: Load existing content
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                }),
-            )
-            .expect("ImGui rendering failed");
-
-        self.queue.submit(Some(encoder.finish()));
-        surface_texture.present();
+    
+        self.imgui.renderer.render(
+            self.imgui.context.render(),
+            &self.queue,
+            &self.device,
+            &mut encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("ImGui Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: texture_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            }),
+        ).expect("ImGui rendering failed");
     }
-}
-
-fn create_pipeline(
-    device: &wgpu::Device,
-    swap_chain_format: wgpu::TextureFormat,
-    pipeline_layout: &wgpu::PipelineLayout,
-) -> wgpu::RenderPipeline {
-    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: None,
-        source: ShaderSource::Wgsl(Cow::Borrowed(include_str!("voxels.wgsl"))),
-    });
-
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: None,
-        layout: Some(pipeline_layout),
-        vertex: wgpu::VertexState {
-            module: &shader,
-            entry_point: Some("vs_main"),
-            buffers: &[create_vertex_buffer_layout()],
-            compilation_options: Default::default(),
-        },
-        fragment: Some(wgpu::FragmentState {
-            module: &shader,
-            entry_point: Some("fs_main"),
-            compilation_options: Default::default(),
-            targets: &[Some(swap_chain_format.into())],
-        }),
-        primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleList,
-            strip_index_format: None,
-            front_face: wgpu::FrontFace::Ccw,
-            cull_mode: Some(wgpu::Face::Back),
-            unclipped_depth: false,
-            polygon_mode: wgpu::PolygonMode::Fill,
-            conservative: false,
-        },
-        depth_stencil: Some(wgpu::DepthStencilState {
-            format: wgpu::TextureFormat::Depth32Float,
-            depth_write_enabled: true,
-            depth_compare: wgpu::CompareFunction::Less,
-            stencil: wgpu::StencilState::default(),
-            bias: wgpu::DepthBiasState::default(),
-        }),
-        multisample: wgpu::MultisampleState::default(),
-        multiview: None,
-        cache: None,
-    })
-}
-
-fn calculate_sun_direction(time_of_day: f32, sun_incline: f32) -> [f32; 4] {
-    // Convert time to an angle in radians (0-24 hours maps to 0-2π)
-    let time_angle = (time_of_day / 24.0) * 2.0 * std::f32::consts::PI;
-
-    // Calculate horizontal position using time (x and z components)
-    let x = time_angle.cos();
-    let z = time_angle.sin();
-
-    // Calculate vertical position using incline (y component)
-    // Map 0.0-1.0 to appropriate elevation angle
-    // At incline 0.0, sun is at horizon (y=0)
-    // At incline 1.0, sun is directly overhead (y=1, x/z reduced)
-    let incline_angle = sun_incline * std::f32::consts::FRAC_PI_2; // 0 to π/2
-    let y = incline_angle.sin();
-
-    // Adjust x and z based on elevation to keep vector normalized
-    let horizontal_scale = incline_angle.cos();
-    let x_adjusted = x * horizontal_scale;
-    let z_adjusted = z * horizontal_scale;
-
-    // Return normalized direction vector
-    [x_adjusted, -z_adjusted, y, 0.0] // Negative z to match common 3D coordinate systems
 }

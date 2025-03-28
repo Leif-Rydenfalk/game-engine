@@ -1,5 +1,6 @@
 use cgmath::{InnerSpace, Matrix3, Point3, Quaternion, Rad, Rotation3, SquareMatrix, Vector3};
 use std::time::Duration;
+use cgmath::Zero;
 
 #[derive(Debug)]
 pub struct Transform {
@@ -24,6 +25,8 @@ pub struct Camera {
     pub aspect: f32,
     pub near: f32,
     pub far: f32,
+    // We'll keep the up_vector but it's only used for the view matrix calculation,
+    // not for constraining movement
     pub up_vector: Vector3<f32>,
 }
 
@@ -33,7 +36,8 @@ impl Default for Camera {
             fov: Rad(std::f32::consts::FRAC_PI_4),
             aspect: 16.0 / 9.0,
             near: 0.1,
-            far: 100.0,
+            // Increased far plane for space distances
+            far: 1000000.0,
             up_vector: Vector3::unit_y(),
         }
     }
@@ -44,8 +48,11 @@ pub struct CameraController {
     pub move_speed: f32,
     pub move_speed_mult: f32,
     pub look_speed: f32,
-    pub pitch: Rad<f32>,
-    pub yaw: Rad<f32>,
+    // Adding velocity and inertia for space-like movement
+    pub velocity: Vector3<f32>,
+    pub inertia: f32,
+    // We'll track rotation smoothness separately
+    pub rotation_smoothness: f32,
 }
 
 impl Default for CameraController {
@@ -54,8 +61,9 @@ impl Default for CameraController {
             move_speed: 5.0,
             move_speed_mult: 1.0,
             look_speed: 0.003,
-            pitch: Rad(0.0),
-            yaw: Rad(0.0),
+            velocity: Vector3::zero(),
+            inertia: 0.78, // High value = more persistent momentum
+            rotation_smoothness: 0.9, // Controls how smoothly rotation changes occur
         }
     }
 }
