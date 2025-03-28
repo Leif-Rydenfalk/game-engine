@@ -1,3 +1,58 @@
+#![feature(portable_simd)]
+
+use crate::app::App;
+use winit::error::EventLoopError;
+use winit::event_loop::{ControlFlow, EventLoop};
+
+mod app;
+pub use app::*;
+
+mod imgui_state;
+pub use imgui_state::*;
+
+mod voxels;
+pub use voxels::*;
+
+mod sky;
+pub use sky::*;
+
+mod atmosphere;
+pub use atmosphere::*;
+
+mod input;
+pub use input::*;
+
+mod img_utils;
+pub use img_utils::*;
+
+mod vertex;
+pub use vertex::*;
+
+mod wgpu_ctx;
+pub use wgpu_ctx::*;
+
+mod systems;
+pub use systems::*;
+
+mod world;
+pub use world::*;
+
+mod model;
+pub use model::*;
+
+mod bloom;
+pub use bloom::*;
+
+mod color_correction;
+pub use color_correction::*;
+
+fn main() -> Result<(), EventLoopError> {
+    let event_loop = EventLoop::new().unwrap();
+    event_loop.set_control_flow(ControlFlow::Poll);
+    let mut app = App::default();
+    event_loop.run_app(&mut app)
+}
+
 // use rapier2d::prelude::*;
 
 // fn main() {
@@ -52,64 +107,6 @@
 //         println!("Ball altitude: {}", ball_body.translation().y);
 //     }
 // }
-
-#![feature(portable_simd)]
-
-use crate::app::App;
-use winit::error::EventLoopError;
-use winit::event_loop::{ControlFlow, EventLoop};
-
-mod app;
-pub use app::*;
-
-mod imgui_state;
-pub use imgui_state::*;
-
-mod voxels;
-pub use voxels::*;
-
-mod sky;
-pub use sky::*;
-
-mod atmosphere;
-pub use atmosphere::*;
-
-mod input;
-pub use input::*;
-
-mod img_utils;
-pub use img_utils::*;
-
-mod vertex;
-pub use vertex::*;
-
-mod wgpu_ctx;
-pub use wgpu_ctx::*;
-
-mod components;
-pub use components::*;
-
-mod systems;
-pub use systems::*;
-
-mod world;
-pub use world::*;
-
-mod model;
-pub use model::*;
-
-mod bloom;
-pub use bloom::*;
-
-mod color_correction;
-pub use color_correction::*;
-
-fn main() -> Result<(), EventLoopError> {
-    let event_loop = EventLoop::new().unwrap();
-    event_loop.set_control_flow(ControlFlow::Poll);
-    let mut app = App::default();
-    event_loop.run_app(&mut app)
-}
 
 /*
 Get image frequencies with fft

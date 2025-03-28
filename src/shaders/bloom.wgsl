@@ -176,7 +176,7 @@ fn composite_main(@builtin(global_invocation_id) id: vec3<u32>) {
     bloom += textureSampleBicubic(bloom7, bloom_sampler, uv).rgb * 1.0;
 
     // Add bloom to scene color
-    c += bloom * 0.5;
+    //c += bloom * 0.5;
 
     // Write to output texture
     textureStore(output_tex, vec2<i32>(i32(id.x), i32(id.y)), vec4<f32>(c, 1.0));
