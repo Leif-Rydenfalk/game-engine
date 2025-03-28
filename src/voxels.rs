@@ -76,14 +76,14 @@ impl Default for SettingsUniform {
 
         Self {
             // --- Meaningful Defaults ---
-            surface_threshold: 0.4, // Controls how much terrain is generated
-            max_terrain_height: 150.0, // Max height of terrain features
-            voxel_size: 0.5,        // Size of voxels, impacts detail/perf
-            max_ray_steps: 128,     // Max steps for ray marching
-            max_distance: 1000.0,   // Max view distance
+            surface_threshold: 0.4,   // Controls how much terrain is generated
+            max_terrain_height: 10.0, // Max height of terrain features
+            voxel_size: 0.5,          // Size of voxels, impacts detail/perf
+            max_ray_steps: 128,       // Max steps for ray marching
+            max_distance: 1000.0,     // Max view distance
             ray_march_epsilon: 0.001, // Small offset for ray marching
-            water_level: 5.0,       // Y-coordinate for water plane
-            max_water_influenced_height: 10.0, // Terrain height above water where color blends
+            water_level: 5.0,         // Y-coordinate for water plane
+            max_water_influenced_height: 1.0, // Terrain height above water where color blends
             light_color: [1.0, 0.95, 0.9, 1.0], // Slightly warm white light
             light_direction: [norm_dir[0], norm_dir[1], norm_dir[2], 0.0], // From above-side
 
@@ -101,7 +101,7 @@ impl Default for SettingsUniform {
             tunnel_radius: 0.0,
             camera_speed: 0.0,
             camera_time_offset: 0.0,
-            voxel_level: 0,
+            voxel_level: 5,
             _padding0: [0; 12],
             _padding1: [0; 4],
             _wgsl_explicit_padding: [0.0; 3],

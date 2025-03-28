@@ -1083,6 +1083,16 @@ impl<'window> WgpuCtx<'window> {
                                 if show_steps { 1 } else { 0 };
                             self.voxel_renderer.update_settings_buffer();
                         }
+
+                        if ui.slider(
+                            "Voxel Level",
+                            1,
+                            8,
+                            &mut self.voxel_renderer.voxel_settings.voxel_level,
+                        ) {
+                            self.voxel_renderer.voxel_settings.update_voxel_size();
+                            self.voxel_renderer.update_settings_buffer();
+                        }
                     }
                     RenderMode::Atmosphere => {
                         // Atmosphere settings controls
