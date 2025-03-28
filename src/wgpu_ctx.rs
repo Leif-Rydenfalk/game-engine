@@ -1084,6 +1084,16 @@ impl<'window> WgpuCtx<'window> {
                             self.voxel_renderer.update_settings_buffer();
                         }
 
+                        if ui
+                            .input_float(
+                                "Max Ray Distance",
+                                &mut self.voxel_renderer.voxel_settings.max_distance,
+                            )
+                            .build()
+                        {
+                            self.voxel_renderer.update_settings_buffer();
+                        }
+
                         if ui.slider(
                             "Voxel Level",
                             1,
@@ -1091,6 +1101,39 @@ impl<'window> WgpuCtx<'window> {
                             &mut self.voxel_renderer.voxel_settings.voxel_level,
                         ) {
                             self.voxel_renderer.voxel_settings.update_voxel_size();
+                            self.voxel_renderer.update_settings_buffer();
+                        }
+
+                        if ui
+                            .input_float(
+                                "Water Level",
+                                &mut self.voxel_renderer.voxel_settings.water_level,
+                            )
+                            .build()
+                        {
+                            self.voxel_renderer.update_settings_buffer();
+                        }
+
+                        if ui
+                            .input_float(
+                                "Max Water Influential Height",
+                                &mut self
+                                    .voxel_renderer
+                                    .voxel_settings
+                                    .max_water_influenced_height,
+                            )
+                            .build()
+                        {
+                            self.voxel_renderer.update_settings_buffer();
+                        }
+
+                        if ui
+                            .input_float(
+                                "Max Terrain Height",
+                                &mut self.voxel_renderer.voxel_settings.max_terrain_height,
+                            )
+                            .build()
+                        {
                             self.voxel_renderer.update_settings_buffer();
                         }
                     }

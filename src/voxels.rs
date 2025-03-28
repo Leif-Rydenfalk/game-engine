@@ -78,7 +78,7 @@ impl Default for SettingsUniform {
             // --- Meaningful Defaults ---
             surface_threshold: 0.4,   // Controls how much terrain is generated
             max_terrain_height: 10.0, // Max height of terrain features
-            voxel_size: 0.5,          // Size of voxels, impacts detail/perf
+            voxel_size: 2.0f32.powf(-5.0), // Size of voxels, impacts detail/perf
             max_ray_steps: 128,       // Max steps for ray marching
             max_distance: 1000.0,     // Max view distance
             ray_march_epsilon: 0.001, // Small offset for ray marching
