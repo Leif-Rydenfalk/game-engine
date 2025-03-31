@@ -385,7 +385,7 @@ impl<'window> WgpuCtx<'window> {
             time: Instant::now(),
             hidpi_factor: window.scale_factor(),
             imgui,
-            render_mode: RenderMode::Voxel,
+            render_mode: RenderMode::Atmosphere,
             voxel_renderer,
             atmosphere_renderer,
             atmosphere_output_bind_group,
