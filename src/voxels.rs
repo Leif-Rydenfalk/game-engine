@@ -19,100 +19,79 @@ use imgui_winit_support::WinitPlatform;
 #[repr(C)]
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct SettingsUniform {
-    // Renamed struct for clarity
-    // --- Fields Used by Shader Logic (Matching WGSL Order) ---
-    pub surface_threshold: f32,  // offset 0
-    pub max_terrain_height: f32, // offset 4
-    pub voxel_size: f32,         // offset 8
-    pub max_ray_steps: i32,      // offset 12
-    // --- Auto Padding to 16 bytes ---
-    pub max_distance: f32,      // offset 16
-    pub min_distance: f32,      // offset 20 (unused in shader logic)
-    pub ray_march_epsilon: f32, // offset 24
-    pub water_level: f32,       // offset 28
-    // --- Auto Padding to 32 bytes ---
-    pub max_water_influenced_height: f32, // offset 32
-    /// Padding to align `light_color` to 16 bytes.
-    _padding0: [u8; 12], // offset 36, size 12 -> Next field at 48
+    // --- Fields Matching WGSL Definition ---
+    pub surface_threshold: f32,  // offset 0, size 4, align 4
+    pub max_terrain_height: f32, // offset 4, size 4, align 4
+    pub voxel_size: f32,         // offset 8, size 4, align 4
+    pub max_ray_steps: i32,      // offset 12, size 4, align 4
+    // --- WGSL Implicit Padding handled by Rust layout or explicit padding ---
+    pub max_distance: f32,      // offset 16, size 4, align 4
+    pub min_distance: f32,      // offset 20, size 4, align 4 (present in WGSL struct)
+    pub ray_march_epsilon: f32, // offset 24, size 4, align 4
+    pub water_level: f32,       // offset 28, size 4, align 4
+    // --- WGSL Implicit Padding handled by Rust layout or explicit padding ---
+    pub max_water_influenced_height: f32, // offset 32, size 4, align 4
 
-    pub light_color: [f32; 4],     // offset 48, size 16
-    pub light_direction: [f32; 4], // offset 64, size 16
+    // --- Explicit Padding required by WGSL before vec4f ---
+    // Current offset = 36. Need to reach 48 (align 16). Add 12 bytes.
+    _padding0: [u8; 12], // offset 36, size 12
 
-    pub show_normals: i32,             // offset 80
-    pub show_ray_steps: i32,           // offset 84
-    pub visualize_distance_field: i32, // offset 88
+    pub light_color: [f32; 4], // offset 48, size 16, align 16 (matches vec4f)
+    pub light_direction: [f32; 4], // offset 64, size 16, align 16 (matches vec4f)
+    // --- WGSL Implicit Padding handled by Rust layout or explicit padding ---
+    pub show_normals: i32,             // offset 80, size 4, align 4
+    pub show_ray_steps: i32,           // offset 84, size 4, align 4
+    pub visualize_distance_field: i32, // offset 88, size 4, align 4
 
-    // --- Unused / Legacy Parameters (Matching WGSL Order for layout stability) ---
-    pub max: f32, // offset 92 (unused)
-    // --- Auto Padding to 96 bytes ---
-    pub r_inner: f32,          // offset 96 (unused)
-    pub r: f32,                // offset 100 (unused)
-    pub max_water_height: f32, // offset 104 (unused) - Different from max_water_influenced_height!
-    pub tunnel_radius: f32,    // offset 108 (unused)
-    // --- Auto Padding to 112 bytes ---
-    pub camera_speed: f32,       // offset 112 (unused)
-    pub camera_time_offset: f32, // offset 116 (unused)
-    pub voxel_level: i32,        // offset 120 (unused)
+    // --- Final Struct Padding required by WGSL ---
+    // Current size = 92 bytes. Largest alignment = 16.
+    // Need to pad to next multiple of 16 (96). Add 4 bytes.
+    _padding1: [u8; 4], // offset 92, size 4
+} // --- Total size: 96 bytes ---
 
-    // --- Explicit WGSL Padding Field Alignment & Representation ---
-    /// Padding to align the representation of WGSL's `_padding: vec3<f32>` field.
-    _padding1: [u8; 4], // offset 124, size 4 -> Next field at 128
-    /// Represents the explicit `_padding: vec3<f32>` field in the WGSL struct.
-    _wgsl_explicit_padding: [f32; 3], // offset 128, size 12
-
-    // --- Final Struct Padding ---
-    /// Padding to ensure the total struct size is a multiple of 16.
-    _padding2: [u8; 4], // offset 140, size 4 -> Total size 144
-}
-
-const _: () = assert!(std::mem::size_of::<SettingsUniform>() == 144);
+// Static assertion to verify the size at compile time
+const _: () = assert!(std::mem::size_of::<SettingsUniform>() == 96);
 
 impl Default for SettingsUniform {
     fn default() -> Self {
         // Normalize the default light direction
         let dir = [-0.5f32, -0.7f32, -0.5f32];
-        let len = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt();
+        let len = (dir[0].powi(2) + dir[1].powi(2) + dir[2].powi(2)).sqrt();
         let norm_dir = [dir[0] / len, dir[1] / len, dir[2] / len];
 
         Self {
             // --- Meaningful Defaults ---
-            surface_threshold: 0.4,   // Controls how much terrain is generated
-            max_terrain_height: 10.0, // Max height of terrain features
-            voxel_size: 2.0f32.powf(-5.0), // Size of voxels, impacts detail/perf
-            max_ray_steps: 128,       // Max steps for ray marching
-            max_distance: 1000.0,     // Max view distance
-            ray_march_epsilon: 0.001, // Small offset for ray marching
-            water_level: 5.0,         // Y-coordinate for water plane
-            max_water_influenced_height: 1.0, // Terrain height above water where color blends
+            surface_threshold: 0.4,
+            max_terrain_height: 10.0,
+            voxel_size: 2.0f32.powf(-5.0), // approx 0.03125
+            max_ray_steps: 128,
+            max_distance: 1000.0,
+            min_distance: 0.1, // Default value, even if unused in current shader logic
+            ray_march_epsilon: 0.001,
+            water_level: 5.0,
+            max_water_influenced_height: 1.0,
             light_color: [1.0, 0.95, 0.9, 1.0], // Slightly warm white light
-            light_direction: [norm_dir[0], norm_dir[1], norm_dir[2], 0.0], // From above-side
+            light_direction: [norm_dir[0], norm_dir[1], norm_dir[2], 0.0], // Normalized direction
 
             // --- Debug Flags (Default Off) ---
             show_normals: 0,
             show_ray_steps: 0,
             visualize_distance_field: 0,
 
-            // --- Unused/Padding/Legacy Fields (Zeroed) ---
-            min_distance: 0.1, // Often unused, small positive value
-            max: 0.0,
-            r_inner: 0.0,
-            r: 0.0,
-            max_water_height: 0.0, // Unused field from old struct
-            tunnel_radius: 0.0,
-            camera_speed: 0.0,
-            camera_time_offset: 0.0,
-            voxel_level: 5,
+            // --- Padding Fields (Zeroed) ---
             _padding0: [0; 12],
             _padding1: [0; 4],
-            _wgsl_explicit_padding: [0.0; 3],
-            _padding2: [0; 4],
         }
     }
 }
 
 impl SettingsUniform {
-    pub fn update_voxel_size(&mut self) {
-        self.voxel_size = 2.0f32.powf(-self.voxel_level as f32);
+    // pub fn update_voxel_size(&mut self) {
+    //     self.voxel_size = 2.0f32.powf(-self.voxel_level as f32);
+    // }
+
+    pub fn get_voxel_size(voxel_level: u32) -> f32 {
+        2.0f32.powf(-(voxel_level as f32))
     }
 
     pub fn create_buffer(&self, device: &wgpu::Device) -> wgpu::Buffer {
