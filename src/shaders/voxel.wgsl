@@ -338,6 +338,7 @@ fn getAlbedo(vpos: vec3f, gn: vec3f, lod: f32) -> vec3f {
     var alb2 = vec3f(1.0) - triplanarLod(vpos * 0.08, gn, 4.0, 3, lod);
     alb2 *= alb2;
     let k = triplanarLod(vpos * 0.0005, gn, 4.0, 0, 0.0).r;
+    
     let wk = smoothstep(settings.max_water_height, settings.max_water_height + 0.5, vpos.y);
     let top = smoothstep(0.3, 0.7, gn.y);
     alb = alb * 0.95 * vec3f(1.0, 0.7, 0.65) + 0.05;
@@ -394,6 +395,11 @@ fn shade2(pos: vec3f, ldir: vec3f, lod: f32, hit: HitInfo) -> vec3f {
     return col;
 }
 
+fn get_water_height(uv: vec2f, terrain_sampler: sampler, grain_texture: texture_2d<f32>) -> f32 {
+    // return textureSample(grain_texture, terrain_sampler, uv).r;
+    return 0.0;
+}
+
 fn ACESFilm(x: vec3f) -> vec3f {
     let a = 2.51; let b = 0.03; let c = 2.43; let d = 0.59; let e = 0.14;
     return clamp((x * (a * x + b)) / (x * (c * x + d) + e), vec3f(0.0), vec3f(1.0));
@@ -420,7 +426,8 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4f {
     let ro = camera.camera_position;
-    let ndc = vec4f(input.tex_uv * 2.0 - 1.0, 1.0, 1.0);
+    var ndc = vec4f(input.tex_uv * 2.0 - 1.0, 1.0, 1.0);
+    ndc.y *= -1.0;
     let world_pos = camera.inv_view_proj * ndc;
     let rd = normalize(world_pos.xyz / world_pos.w - ro);
 
@@ -472,9 +479,9 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
         let wnstr = 1500.0;
         let wo = vec2f(1.0, 0.8) * camera.time * 0.01;
         let wuv = wpos.xz * 0.08 + wo;
-        let wh = textureSample(grain_texture, terrain_sampler, wuv).r;
-        let whdx = textureSample(grain_texture, terrain_sampler, wuv + vec2f(e, 0.0)).r;
-        let whdy = textureSample(grain_texture, terrain_sampler, wuv + vec2f(0.0, e)).r;
+        let wh = get_water_height(wuv, terrain_sampler, grain_texture);
+        let whdx = get_water_height(wuv + vec2f(e, 0.0), terrain_sampler, grain_texture);
+        let whdy = get_water_height(wuv + vec2f(0.0, e), terrain_sampler, grain_texture);
         let wn = normalize(vec3f(wh - whdx, e * wnstr, wh - whdy));
         let wref = reflect(rd, wn);
 
