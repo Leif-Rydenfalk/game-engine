@@ -246,8 +246,8 @@ impl PostProcessingPipeline {
         // In wgpu, we can use a compute shader to copy between textures of the same format
 
         // First, get access to the textures
-        let source_texture = source_view;
-        let destination_texture = destination_view;
+        let source_texture = source_view.texture();
+        let destination_texture = destination_view.texture();
 
         // Use copyTextureToTexture for direct copying between textures
         encoder.copy_texture_to_texture(

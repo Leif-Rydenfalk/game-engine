@@ -18,8 +18,11 @@ pub struct Input {
     controller_buttons_current: HashMap<(usize, Button), bool>,
     controller_buttons_previous: HashMap<(usize, Button), bool>,
 
-    // Only store the Gilrs instance, as it internally tracks all the controller state
-    gilrs: Option<Gilrs>,
+    // Track analog values for trigger buttons
+    controller_trigger_values: HashMap<(usize, Button), f32>,
+
+    // Tracks controller state
+    pub gilrs: Option<Gilrs>,
 }
 
 impl Default for Input {
@@ -35,6 +38,7 @@ impl Default for Input {
             scroll_delta: Default::default(),
             controller_buttons_current: Default::default(),
             controller_buttons_previous: Default::default(),
+            controller_trigger_values: Default::default(),
             gilrs: Default::default(),
         };
 
@@ -86,41 +90,10 @@ impl Input {
 
         // Update all controller button states first
         if let Some(gilrs) = &mut self.gilrs {
-            // For each connected controller
-            for (id, gamepad) in gilrs.gamepads() {
-                let controller_index = Self::controller_index_from_id(gilrs, id);
-
-                // We need to manually check common buttons to track state changes
-                // This is a list of commonly used buttons
-                let buttons_to_check = [
-                    Button::South,
-                    Button::East,
-                    Button::North,
-                    Button::West,
-                    Button::LeftTrigger,
-                    Button::RightTrigger,
-                    Button::LeftTrigger2,
-                    Button::RightTrigger2,
-                    Button::Select,
-                    Button::Start,
-                    Button::Mode,
-                    Button::LeftThumb,
-                    Button::RightThumb,
-                    Button::DPadUp,
-                    Button::DPadDown,
-                    Button::DPadLeft,
-                    Button::DPadRight,
-                ];
-
-                for &button in &buttons_to_check {
-                    let is_pressed = gamepad.is_pressed(button);
-                    self.controller_buttons_current
-                        .insert((controller_index, button), is_pressed);
-                }
-            }
-
             // Process controller events
             while let Some(Event { id, event, .. }) = gilrs.next_event() {
+                // info!("New event from {}: {:?}", id, event);
+
                 let controller_index = Self::controller_index_from_id(gilrs, id);
 
                 match event {
@@ -134,8 +107,32 @@ impl Input {
                         self.controller_buttons_current
                             .insert((controller_index, button), false);
                     }
+                    EventType::ButtonChanged(button, value, _) => {
+                        // Special handling for triggers
+                        if button == Button::LeftTrigger2 || button == Button::RightTrigger2 {
+                            // Store the analog value
+                            self.controller_trigger_values
+                                .insert((controller_index, button), value);
+
+                            // Also update the button state based on threshold
+                            const TRIGGER_THRESHOLD: f32 = 0.1;
+                            self.controller_buttons_current
+                                .insert((controller_index, button), value > TRIGGER_THRESHOLD);
+                        }
+                    }
                     EventType::Connected => {
-                        info!("Controller {} connected: {}", id, gilrs.gamepad(id).name());
+                        let gp = gilrs.gamepad(id);
+                        let name = gp.name();
+                        let is_ff_supported = gp.is_ff_supported();
+                        let power_info = gp.power_info();
+
+                        info!("Controller connected: {}", id);
+                        info!("  Name: {}", name);
+                        info!("  Force feedback supported: {}", is_ff_supported);
+                        info!("  Power info: {:?}", power_info);
+                        info!("  UUID: {:?}", gp.uuid());
+                        info!("  Vendor ID: {:?}", gp.vendor_id());
+                        info!("  Product ID: {:?}", gp.product_id());
                     }
                     EventType::Disconnected => {
                         info!("Controller disconnected: {}", id);
@@ -144,6 +141,10 @@ impl Input {
                         self.controller_buttons_current
                             .retain(|&(i, _), _| i != controller_index);
                         self.controller_buttons_previous
+                            .retain(|&(i, _), _| i != controller_index);
+
+                        // Clean up trigger values for this controller
+                        self.controller_trigger_values
                             .retain(|&(i, _), _| i != controller_index);
                     }
                     _ => {} // Other events don't affect button state
@@ -290,23 +291,6 @@ impl Input {
         }
     }
 
-    // Get controller axis value with deadzone applied
-    pub fn controller_axis_value_deadzone(
-        &self,
-        controller_index: usize,
-        axis: Axis,
-        deadzone: f32,
-    ) -> f32 {
-        let value = self.controller_axis_value(controller_index, axis);
-        if value.abs() < deadzone {
-            0.0
-        } else {
-            // Rescale the value to account for deadzone
-            let sign = if value >= 0.0 { 1.0 } else { -1.0 };
-            sign * (value.abs() - deadzone) / (1.0 - deadzone)
-        }
-    }
-
     // Helper methods for common controller inputs
     pub fn controller_left_stick_x(&self, controller_index: usize) -> f32 {
         self.controller_axis_value(controller_index, Axis::LeftStickX)
@@ -324,20 +308,27 @@ impl Input {
         self.controller_axis_value(controller_index, Axis::RightStickY)
     }
 
-    pub fn controller_left_trigger(&self, controller_index: usize) -> f32 {
-        self.controller_axis_value(controller_index, Axis::LeftZ)
-    }
-
-    pub fn controller_right_trigger(&self, controller_index: usize) -> f32 {
-        self.controller_axis_value(controller_index, Axis::RightZ)
-    }
-
     pub fn controller_dpad_x(&self, controller_index: usize) -> f32 {
         self.controller_axis_value(controller_index, Axis::DPadX)
     }
 
     pub fn controller_dpad_y(&self, controller_index: usize) -> f32 {
         self.controller_axis_value(controller_index, Axis::DPadY)
+    }
+
+    // Get trigger values
+    pub fn controller_left_trigger(&self, controller_index: usize) -> f32 {
+        *self
+            .controller_trigger_values
+            .get(&(controller_index, Button::LeftTrigger2))
+            .unwrap_or(&0.0)
+    }
+
+    pub fn controller_right_trigger(&self, controller_index: usize) -> f32 {
+        *self
+            .controller_trigger_values
+            .get(&(controller_index, Button::RightTrigger2))
+            .unwrap_or(&0.0)
     }
 
     // Get controller name
@@ -361,111 +352,25 @@ impl Input {
         }
     }
 
-    // Get normalized 2D vector from a pair of controller axes (for joysticks)
+    // Get raw stick vector (for joysticks)
     pub fn controller_stick_vector(
         &self,
         controller_index: usize,
         x_axis: Axis,
         y_axis: Axis,
-        deadzone: f32,
     ) -> (f32, f32) {
         let x = self.controller_axis_value(controller_index, x_axis);
         let y = self.controller_axis_value(controller_index, y_axis);
-
-        // Apply circular deadzone
-        let length_squared = x * x + y * y;
-        if length_squared < deadzone * deadzone {
-            return (0.0, 0.0);
-        }
-
-        // Calculate normalized values
-        let length = length_squared.sqrt();
-        let normalized_x = x / length;
-        let normalized_y = y / length;
-
-        // Scale the magnitude to account for deadzone
-        let normalized_length = (length - deadzone) / (1.0 - deadzone);
-        let scaled_x = normalized_x * normalized_length;
-        let scaled_y = normalized_y * normalized_length;
-
-        (scaled_x, scaled_y)
+        (x, y)
     }
 
-    // Get left stick vector with deadzone
-    pub fn left_stick_vector(&self, controller_index: usize, deadzone: f32) -> (f32, f32) {
-        self.controller_stick_vector(
-            controller_index,
-            Axis::LeftStickX,
-            Axis::LeftStickY,
-            deadzone,
-        )
+    // Get left stick vector
+    pub fn left_stick_vector(&self, controller_index: usize) -> (f32, f32) {
+        self.controller_stick_vector(controller_index, Axis::LeftStickX, Axis::LeftStickY)
     }
 
-    // Get right stick vector with deadzone
-    pub fn right_stick_vector(&self, controller_index: usize, deadzone: f32) -> (f32, f32) {
-        self.controller_stick_vector(
-            controller_index,
-            Axis::RightStickX,
-            Axis::RightStickY,
-            deadzone,
-        )
-    }
-
-    // Enhanced function for analog trigger values (L2/R2)
-    pub fn controller_trigger_value(
-        &self,
-        controller_index: usize,
-        is_right_trigger: bool,
-        deadzone: f32,
-    ) -> f32 {
-        let axis = if is_right_trigger {
-            Axis::RightZ
-        } else {
-            Axis::LeftZ
-        };
-        let value = self.controller_axis_value(controller_index, axis);
-
-        // Convert from [-1, 1] to [0, 1] range if necessary
-        // Different controllers may report triggers differently
-        let normalized = if value >= 0.0 {
-            value // Already in [0, 1] range
-        } else {
-            (value + 1.0) / 2.0 // Convert from [-1, 1] to [0, 1]
-        };
-
-        // Apply deadzone
-        if normalized < deadzone {
-            0.0
-        } else {
-            // Rescale value after deadzone
-            (normalized - deadzone) / (1.0 - deadzone)
-        }
-    }
-
-    // Get analog value for any pressure-sensitive button (like on PS controllers)
-    pub fn controller_button_pressure(
-        &self,
-        controller_index: usize,
-        button: Button,
-        deadzone: f32,
-    ) -> f32 {
-        // Special handling for trigger buttons which are often analog
-        match button {
-            Button::LeftTrigger2 => {
-                self.controller_trigger_value(controller_index, false, deadzone)
-            }
-            Button::RightTrigger2 => {
-                self.controller_trigger_value(controller_index, true, deadzone)
-            }
-            _ => {
-                // For standard buttons, just return 0 or 1
-                // Note: Only some controllers (like PS) support analog face buttons
-                if self.is_controller_button_down(controller_index, button) {
-                    1.0
-                } else {
-                    0.0
-                }
-            }
-        }
+    // Get right stick vector
+    pub fn right_stick_vector(&self, controller_index: usize) -> (f32, f32) {
+        self.controller_stick_vector(controller_index, Axis::RightStickX, Axis::RightStickY)
     }
 }

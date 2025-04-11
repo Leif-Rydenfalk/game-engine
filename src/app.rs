@@ -4,6 +4,7 @@ use gilrs::{Axis, Button};
 // app.rs
 use hecs::World;
 use std::sync::Arc;
+use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 use winit::application::ApplicationHandler;
@@ -127,9 +128,22 @@ impl<'window> ApplicationHandler for App<'window> {
                     .last_frame_time
                     .map(|t| now.duration_since(t))
                     .unwrap_or_default();
+
+                const TARGET_FRAMETIME: Duration = Duration::from_millis(10);
+
+                if dt < TARGET_FRAMETIME {
+                    thread::sleep(TARGET_FRAMETIME.saturating_sub(dt));
+                }
+
+                let now = Instant::now();
+                let dt = self
+                    .last_frame_time
+                    .map(|t| now.duration_since(t))
+                    .unwrap_or_default();
+
                 self.last_frame_time = Some(now);
 
-                self.update(dt);
+                update_world(&mut self.world, &mut self.input_system, dt);
 
                 if let (Some(wgpu_ctx), Some(camera_entity)) =
                     (&mut self.wgpu_ctx, self.camera_entity)
@@ -229,124 +243,5 @@ impl<'window> ApplicationHandler for App<'window> {
         imgui
             .platform
             .handle_event::<()>(imgui.context.io_mut(), &window, &Event::AboutToWait);
-    }
-}
-
-#[derive(Debug)]
-pub struct JoystickInput {
-    pub left_stick: Vector2<f32>,
-    pub right_stick: Vector2<f32>,
-}
-
-impl Default for JoystickInput {
-    fn default() -> Self {
-        Self {
-            left_stick: Vector2::new(0.0, 0.0),
-            right_stick: Vector2::new(0.0, 0.0),
-        }
-    }
-}
-
-impl<'window> App<'window> {
-    // // Add this system to update joystick inputs directly from the input system
-    // pub fn update_joystick_inputs(world: &mut World, input: &Input) {
-    //     // Get all connected controllers
-    //     let controller_count = input.connected_controllers_count();
-
-    //     for controller_idx in 0..controller_count {
-    //         if !input.is_controller_connected(controller_idx) {
-    //             continue;
-    //         }
-
-    //         // Get analog stick vectors
-    //         let left_stick = input.left_stick_vector(controller_idx, 0.15);
-    //         let right_stick = input.right_stick_vector(controller_idx, 0.15);
-
-    //         // Skip if both sticks are at rest
-    //         if left_stick == (0.0, 0.0) && right_stick == (0.0, 0.0) {
-    //             continue;
-    //         }
-
-    //         // Find entities that should respond to this controller
-    //         for (entity, _) in world
-    //             .query::<&InputListener>()
-    //             .iter()
-    //             .filter(|(_, listener)| {
-    //                 listener.player_id.is_none()
-    //                     || listener.player_id == Some(PlayerId(controller_idx))
-    //             })
-    //         {
-    //             // Update the joystick input component
-    //             match world.query_one_mut::<&mut JoystickInput>(entity) {
-    //                 Ok(mut joystick) => {
-    //                     joystick.left_stick = Vector2::new(left_stick.0, left_stick.1);
-    //                     joystick.right_stick = Vector2::new(right_stick.0, right_stick.1);
-    //                 }
-    //                 Err(_) => {
-    //                     // Create a new component if it doesn't exist
-    //                     let joystick = JoystickInput {
-    //                         left_stick: Vector2::new(left_stick.0, left_stick.1),
-    //                         right_stick: Vector2::new(right_stick.0, right_stick.1),
-    //                     };
-    //                     let _ = world.insert_one(entity, joystick);
-    //                 }
-    //             }
-    //         }
-    //     }
-    // }
-
-    // // Example of using joystick vectors for camera control in App
-    // fn handle_camera_rotation_vector(&mut self, camera_entity: hecs::Entity, dt: Duration) {
-    //     let dt_seconds = dt.as_secs_f32();
-
-    //     // Get current camera transform
-    //     if let Ok((transform, joystick)) = self
-    //         .world
-    //         .query_one_mut::<(&mut Transform, &JoystickInput)>(camera_entity)
-    //     {
-    //         // Use right joystick for camera look
-    //         let yaw = joystick.right_stick.x * 5.0 * dt_seconds;
-    //         let pitch = joystick.right_stick.y * 5.0 * dt_seconds;
-
-    //         if yaw != 0.0 || pitch != 0.0 {
-    //             // Apply yaw rotation around global Y axis
-    //             let yaw_rotation = Quaternion::from_axis_angle(Vector3::unit_y(), Rad(yaw));
-    //             transform.rotation = yaw_rotation * transform.rotation;
-
-    //             // Apply pitch rotation around local X axis with constraints
-    //             let right = transform.rotation * Vector3::unit_x();
-
-    //             // Calculate current pitch angle to apply constraints
-    //             let forward = transform.rotation * -Vector3::unit_z();
-    //             let forward_xz = Vector3::new(forward.x, 0.0, forward.z).normalize();
-    //             let current_pitch = forward.y.asin();
-
-    //             // Constrain pitch to reasonable range (e.g., -85 to 85 degrees)
-    //             const MAX_PITCH: f32 = 85.0 * std::f32::consts::PI / 180.0;
-    //             let new_pitch = (current_pitch - pitch).max(-MAX_PITCH).min(MAX_PITCH);
-    //             let pitch_delta = new_pitch - current_pitch;
-
-    //             let pitch_rotation =
-    //                 Quaternion::from_axis_angle(right.normalize(), Rad(pitch_delta));
-    //             transform.rotation = pitch_rotation * transform.rotation;
-    //         }
-    //     }
-    // }
-
-    // Example of using this in the App update method
-    fn update(&mut self, dt: Duration) {
-        // // Update input mapper with current input state
-        // let action_events = self.input_mapper.update(&self.input_system);
-
-        // // Update joystick inputs directly (bypassing the action mapping system for analog sticks)
-        // update_joystick_inputs(&mut self.world, &self.input_system);
-
-        // // Process camera rotation from joystick
-        // if let Some(camera_entity) = self.camera_entity {
-        //     self.handle_camera_rotation_vector(camera_entity, dt);
-        // }
-
-        // Other updates...
-        update_world(&mut self.world, &self.input_system, dt);
     }
 }

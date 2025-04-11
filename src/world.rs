@@ -3,10 +3,13 @@ use cgmath::One;
 use cgmath::Point3;
 use cgmath::Rotation3;
 use cgmath::{perspective, InnerSpace, Matrix4, Quaternion, Rad, Vector3, Zero};
+use gilrs::Axis;
+use gilrs::GamepadId;
 use hecs::Entity;
 use hecs::World;
 use std::time::Duration;
 use tracing::info;
+use tracing::warn;
 
 #[derive(Debug)]
 pub struct Transform {
@@ -93,11 +96,12 @@ pub fn setup_camera_entity(world: &mut World, window_size: Option<(u32, u32)>) -
             ..Default::default()
         },
         FPSController::default(), // Add the FPS controller component
+        TriggerHandler::new(Duration::from_millis(500)),
     ))
 }
 
 // Replace the update_world function with this FPS controller version
-pub fn update_world(world: &mut World, input: &Input, dt: Duration) {
+pub fn update_world(world: &mut World, input: &mut Input, dt: Duration) {
     // Skip if no controllers connected
     if input.connected_controllers_count() == 0 {
         return;
@@ -112,19 +116,35 @@ pub fn update_world(world: &mut World, input: &Input, dt: Duration) {
         controller_index
     };
 
+    for (_, trigger_handler) in world.query_mut::<&mut TriggerHandler>() {
+        let value = input.controller_right_trigger(controller_index);
+
+        trigger_handler.process_trigger_input(value);
+
+        // Get vibration values for current state
+        let (strong, weak) = trigger_handler.get_vibration_values();
+
+        input
+            .gilrs
+            .as_mut()
+            .unwrap()
+            .gamepad(GamepadId { 0: controller_idx })
+            .set_ff_state(strong, weak, Duration::from_millis(10))
+            .unwrap();
+    }
+
     let dt_seconds = dt.as_secs_f32();
 
     // Camera movement and look settings
     let move_speed = 5.0; // Units per second
     let look_speed = 1.5; // Radians per second
-    let stick_deadzone = 0.15;
 
     // Query for camera entity with FPSController
     for (_, (transform, _, fps_controller)) in
         world.query_mut::<(&mut Transform, &Camera, &mut FPSController)>()
     {
         // Movement using left stick
-        let (raw_move_x, raw_move_z) = input.left_stick_vector(controller_idx, stick_deadzone);
+        let (raw_move_x, raw_move_z) = input.left_stick_vector(controller_idx);
 
         // Calculate the magnitude of the move vector
         let move_magnitude = (raw_move_x * raw_move_x + raw_move_z * raw_move_z).sqrt();
@@ -150,12 +170,13 @@ pub fn update_world(world: &mut World, input: &Input, dt: Duration) {
         }
 
         // Vertical movement using triggers
-        let up_input = input.controller_trigger_value(controller_idx, false, 0.1); // Left trigger
-        let down_input = input.controller_trigger_value(controller_idx, true, 0.1); // Right trigger
-        transform.position.y += (up_input - down_input) * move_speed * dt_seconds;
+        let up_input = input.is_controller_button_down(controller_idx, gilrs::Button::South);
+        let down_input = input.is_controller_button_down(controller_idx, gilrs::Button::West);
+        transform.position.y +=
+            (up_input as i8 - down_input as i8) as f32 * move_speed * dt_seconds;
 
         // Camera rotation using right stick
-        let (raw_look_x, raw_look_y) = input.right_stick_vector(controller_idx, stick_deadzone);
+        let (raw_look_x, raw_look_y) = input.right_stick_vector(controller_idx);
         let raw_look_y = raw_look_y * -1.0;
 
         // Calculate the magnitude of the look vector
@@ -172,7 +193,6 @@ pub fn update_world(world: &mut World, input: &Input, dt: Duration) {
 
             // Update yaw (horizontal rotation) with pitch compensation
             let pitch_correction = 1.0 / fps_controller.pitch.cos().abs();
-            info!("{}", pitch_correction);
             fps_controller.yaw -= look_x * look_speed * dt_seconds * pitch_correction;
 
             // Update pitch (vertical rotation) with constraints to prevent flipping
@@ -237,6 +257,136 @@ impl Default for Velocity {
         Self {
             value: Vector3::new(0.0, 0.0, 0.0),
             forward_direction: Vector3::new(0.0, 0.0, -1.0), // Forward is -Z
+        }
+    }
+}
+
+use gilrs::{Button, EventType, Gilrs};
+use std::time::Instant;
+
+/// Handles the state and transitions for a trigger with force feedback effects
+pub struct TriggerHandler {
+    state: TriggerState,
+    pulse_duration: Duration,
+}
+
+/// Internal representation of the trigger state
+#[derive(Debug)]
+enum TriggerState {
+    /// No vibration
+    Idle,
+    /// Trigger partially pressed, weak vibration building up
+    Building {
+        r2_value: f32, // Current trigger value
+    },
+    /// Trigger fully pressed, strong vibration pulse
+    Firing {
+        started_at: Instant, // When the firing began
+        duration: Duration,  // How long the firing effect should last
+    },
+    /// Waiting for trigger to be released below threshold before another pulse
+    Resetting,
+}
+
+impl TriggerHandler {
+    /// Create a new TriggerHandler with the specified pulse duration
+    pub fn new(pulse_duration: Duration) -> Self {
+        Self {
+            state: TriggerState::Idle,
+            pulse_duration,
+        }
+    }
+
+    /// Process a new trigger input value and update the internal state
+    ///
+    /// This handles all state transitions, including time-based ones
+    pub fn process_trigger_input(&mut self, trigger_value: f32) {
+        // Update state based on current state and trigger value
+        self.state = match &self.state {
+            TriggerState::Idle => {
+                if trigger_value > 0.05 {
+                    TriggerState::Building {
+                        r2_value: trigger_value,
+                    }
+                } else {
+                    TriggerState::Idle
+                }
+            }
+            TriggerState::Building { .. } => {
+                if trigger_value >= 0.99 {
+                    TriggerState::Firing {
+                        started_at: Instant::now(),
+                        duration: self.pulse_duration,
+                    }
+                } else if trigger_value <= 0.05 {
+                    TriggerState::Idle
+                } else {
+                    TriggerState::Building {
+                        r2_value: trigger_value,
+                    }
+                }
+            }
+            TriggerState::Firing {
+                started_at,
+                duration,
+            } => {
+                if trigger_value < 0.95 {
+                    TriggerState::Resetting
+                } else {
+                    TriggerState::Firing {
+                        started_at: *started_at,
+                        duration: *duration,
+                    }
+                }
+            }
+            TriggerState::Resetting => {
+                if trigger_value < 0.3 {
+                    TriggerState::Idle
+                } else {
+                    TriggerState::Resetting
+                }
+            }
+        };
+
+        // Also check for time-based transitions
+        self.check_time_transitions();
+    }
+
+    /// Check for any time-based state transitions
+    fn check_time_transitions(&mut self) {
+        if let TriggerState::Firing {
+            started_at,
+            duration,
+        } = self.state
+        {
+            if started_at.elapsed() >= duration {
+                self.state = TriggerState::Resetting;
+            }
+        }
+    }
+
+    /// Get the current vibration values as (strong, weak) motor intensities
+    pub fn get_vibration_values(&self) -> (u16, u16) {
+        match &self.state {
+            TriggerState::Idle => (0, 0),
+            TriggerState::Building { r2_value } => {
+                // Scale the weak motor value based on the trigger value
+                // Use 50% max intensity for the buildup effect
+                let weak = (r2_value * 0.5 * u16::MAX as f32) as u16;
+                (0, weak)
+            }
+            TriggerState::Firing { .. } => (u16::MAX, 0),
+            TriggerState::Resetting => (0, 0),
+        }
+    }
+
+    /// Get a string representation of the current state (for debugging)
+    pub fn state_name(&self) -> &'static str {
+        match &self.state {
+            TriggerState::Idle => "Idle",
+            TriggerState::Building { .. } => "Building",
+            TriggerState::Firing { .. } => "Firing",
+            TriggerState::Resetting => "Resetting",
         }
     }
 }

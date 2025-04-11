@@ -27,9 +27,10 @@ tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
 # gilrs = { version = "0.11", default-features = false, features = [
 #     "xinput",
 # ] } # works with xbox controllers
-gilrs = { version = "0.11", features = [
+gilrs = { path = "./lib/gilrs/gilrs", features = [
     "serde-serialize",
-] } # works with ps controllers           
+] } # works with ps controllers  
+
 # gilrs = { version = "0.11", default-features = false, features = [
 #     "xinput",
 #     "wgi",
