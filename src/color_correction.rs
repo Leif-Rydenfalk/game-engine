@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use std::borrow::Cow;
+use std::sync::Arc;
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 use wgpu::{MemoryHints, SamplerDescriptor, ShaderSource};
 
@@ -75,7 +75,9 @@ impl ColorCorrectionEffect {
             Some(shader) => shader.clone(),
             None => device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("Color Correction Shader"),
-                source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("shaders/color_correction.wgsl"))),
+                source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!(
+                    "shaders/color_correction.wgsl"
+                ))),
             }),
         };
 

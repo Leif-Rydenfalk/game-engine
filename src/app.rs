@@ -1,17 +1,21 @@
-use cgmath::{EuclideanSpace, Point3, SquareMatrix};
+use cgmath::{EuclideanSpace, InnerSpace, Point3, Rad, Rotation3, SquareMatrix, Vector2};
+use cgmath::{Quaternion, Vector3};
+use gilrs::{Axis, Button};
 // app.rs
 use hecs::World;
-use winit::event::Event;
-use winit::keyboard::Key;
-use winit::keyboard::NamedKey;
 use std::sync::Arc;
+use std::time::Duration;
 use std::time::Instant;
 use winit::application::ApplicationHandler;
 use winit::dpi::Size;
+use winit::event::Event;
 use winit::event::MouseScrollDelta::*;
 use winit::event::WindowEvent;
 use winit::event::{DeviceEvent, DeviceId};
 use winit::event_loop::ActiveEventLoop;
+use winit::keyboard::Key;
+use winit::keyboard::KeyCode;
+use winit::keyboard::NamedKey;
 use winit::keyboard::PhysicalKey;
 use winit::window::{Window, WindowId};
 
@@ -33,7 +37,7 @@ impl<'window> ApplicationHandler for App<'window> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_none() {
             let win_attr = Window::default_attributes()
-                .with_title("Voxel Renderer")
+                .with_title("game_engine")
                 .with_inner_size(winit::dpi::PhysicalSize::new(800, 800))
                 .with_min_inner_size(winit::dpi::PhysicalSize::new(200, 200));
             let window = Arc::new(event_loop.create_window(win_attr).unwrap());
@@ -103,7 +107,7 @@ impl<'window> ApplicationHandler for App<'window> {
             WindowEvent::KeyboardInput { event, .. } => {
                 let imgui = &mut self.wgpu_ctx.as_mut().unwrap().imgui;
                 let io = imgui.context.io();
-                
+
                 // Only process keyboard input if ImGui isn't capturing it
                 if !io.want_capture_keyboard {
                     if let Key::Named(NamedKey::Escape) = event.logical_key {
@@ -111,7 +115,7 @@ impl<'window> ApplicationHandler for App<'window> {
                             event_loop.exit();
                         }
                     }
-            
+
                     if let PhysicalKey::Code(key) = event.physical_key {
                         self.input_system.handle_key_input(key, event.state);
                     }
@@ -125,8 +129,7 @@ impl<'window> ApplicationHandler for App<'window> {
                     .unwrap_or_default();
                 self.last_frame_time = Some(now);
 
-                // Update camera system
-                update_camera_system(&mut self.world, &self.input_system, dt);
+                self.update(dt);
 
                 if let (Some(wgpu_ctx), Some(camera_entity)) =
                     (&mut self.wgpu_ctx, self.camera_entity)
@@ -156,16 +159,16 @@ impl<'window> ApplicationHandler for App<'window> {
             WindowEvent::MouseInput { button, state, .. } => {
                 let imgui = &mut self.wgpu_ctx.as_mut().unwrap().imgui;
                 let io = imgui.context.io();
-                
+
                 if !io.want_capture_mouse {
                     self.input_system.handle_mouse_button(button, state);
                 }
             }
-            
+
             WindowEvent::CursorMoved { position, .. } => {
                 let imgui = &mut self.wgpu_ctx.as_mut().unwrap().imgui;
                 let io = imgui.context.io();
-                
+
                 if !io.want_capture_mouse {
                     self.input_system.handle_cursor_moved(&position);
                 }
@@ -219,15 +222,131 @@ impl<'window> ApplicationHandler for App<'window> {
         );
     }
 
-
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
         let window = self.window.as_mut().unwrap();
         let imgui = &mut self.wgpu_ctx.as_mut().unwrap().imgui;
         window.request_redraw();
-        imgui.platform.handle_event::<()>(
-            imgui.context.io_mut(),
-            &window,
-            &Event::AboutToWait,
-        );
+        imgui
+            .platform
+            .handle_event::<()>(imgui.context.io_mut(), &window, &Event::AboutToWait);
+    }
+}
+
+#[derive(Debug)]
+pub struct JoystickInput {
+    pub left_stick: Vector2<f32>,
+    pub right_stick: Vector2<f32>,
+}
+
+impl Default for JoystickInput {
+    fn default() -> Self {
+        Self {
+            left_stick: Vector2::new(0.0, 0.0),
+            right_stick: Vector2::new(0.0, 0.0),
+        }
+    }
+}
+
+impl<'window> App<'window> {
+    // // Add this system to update joystick inputs directly from the input system
+    // pub fn update_joystick_inputs(world: &mut World, input: &Input) {
+    //     // Get all connected controllers
+    //     let controller_count = input.connected_controllers_count();
+
+    //     for controller_idx in 0..controller_count {
+    //         if !input.is_controller_connected(controller_idx) {
+    //             continue;
+    //         }
+
+    //         // Get analog stick vectors
+    //         let left_stick = input.left_stick_vector(controller_idx, 0.15);
+    //         let right_stick = input.right_stick_vector(controller_idx, 0.15);
+
+    //         // Skip if both sticks are at rest
+    //         if left_stick == (0.0, 0.0) && right_stick == (0.0, 0.0) {
+    //             continue;
+    //         }
+
+    //         // Find entities that should respond to this controller
+    //         for (entity, _) in world
+    //             .query::<&InputListener>()
+    //             .iter()
+    //             .filter(|(_, listener)| {
+    //                 listener.player_id.is_none()
+    //                     || listener.player_id == Some(PlayerId(controller_idx))
+    //             })
+    //         {
+    //             // Update the joystick input component
+    //             match world.query_one_mut::<&mut JoystickInput>(entity) {
+    //                 Ok(mut joystick) => {
+    //                     joystick.left_stick = Vector2::new(left_stick.0, left_stick.1);
+    //                     joystick.right_stick = Vector2::new(right_stick.0, right_stick.1);
+    //                 }
+    //                 Err(_) => {
+    //                     // Create a new component if it doesn't exist
+    //                     let joystick = JoystickInput {
+    //                         left_stick: Vector2::new(left_stick.0, left_stick.1),
+    //                         right_stick: Vector2::new(right_stick.0, right_stick.1),
+    //                     };
+    //                     let _ = world.insert_one(entity, joystick);
+    //                 }
+    //             }
+    //         }
+    //     }
+    // }
+
+    // // Example of using joystick vectors for camera control in App
+    // fn handle_camera_rotation_vector(&mut self, camera_entity: hecs::Entity, dt: Duration) {
+    //     let dt_seconds = dt.as_secs_f32();
+
+    //     // Get current camera transform
+    //     if let Ok((transform, joystick)) = self
+    //         .world
+    //         .query_one_mut::<(&mut Transform, &JoystickInput)>(camera_entity)
+    //     {
+    //         // Use right joystick for camera look
+    //         let yaw = joystick.right_stick.x * 5.0 * dt_seconds;
+    //         let pitch = joystick.right_stick.y * 5.0 * dt_seconds;
+
+    //         if yaw != 0.0 || pitch != 0.0 {
+    //             // Apply yaw rotation around global Y axis
+    //             let yaw_rotation = Quaternion::from_axis_angle(Vector3::unit_y(), Rad(yaw));
+    //             transform.rotation = yaw_rotation * transform.rotation;
+
+    //             // Apply pitch rotation around local X axis with constraints
+    //             let right = transform.rotation * Vector3::unit_x();
+
+    //             // Calculate current pitch angle to apply constraints
+    //             let forward = transform.rotation * -Vector3::unit_z();
+    //             let forward_xz = Vector3::new(forward.x, 0.0, forward.z).normalize();
+    //             let current_pitch = forward.y.asin();
+
+    //             // Constrain pitch to reasonable range (e.g., -85 to 85 degrees)
+    //             const MAX_PITCH: f32 = 85.0 * std::f32::consts::PI / 180.0;
+    //             let new_pitch = (current_pitch - pitch).max(-MAX_PITCH).min(MAX_PITCH);
+    //             let pitch_delta = new_pitch - current_pitch;
+
+    //             let pitch_rotation =
+    //                 Quaternion::from_axis_angle(right.normalize(), Rad(pitch_delta));
+    //             transform.rotation = pitch_rotation * transform.rotation;
+    //         }
+    //     }
+    // }
+
+    // Example of using this in the App update method
+    fn update(&mut self, dt: Duration) {
+        // // Update input mapper with current input state
+        // let action_events = self.input_mapper.update(&self.input_system);
+
+        // // Update joystick inputs directly (bypassing the action mapping system for analog sticks)
+        // update_joystick_inputs(&mut self.world, &self.input_system);
+
+        // // Process camera rotation from joystick
+        // if let Some(camera_entity) = self.camera_entity {
+        //     self.handle_camera_rotation_vector(camera_entity, dt);
+        // }
+
+        // Other updates...
+        update_world(&mut self.world, &self.input_system, dt);
     }
 }

@@ -1,8 +1,5 @@
 use crate::vertex::{create_vertex_buffer_layout, INDICES_SQUARE, VERTICES_SQUARE};
-use crate::{
-    BloomEffect, Camera, CameraController, ColorCorrectionEffect, ColorCorrectionUniform, Model,
-    ModelInstance, RgbaImg, ShaderHotReload, Transform,
-};
+use crate::*;
 use cgmath::{Matrix4, Point3, SquareMatrix};
 use hecs::World;
 use std::borrow::Cow;
@@ -14,6 +11,8 @@ use winit::window::Window;
 use imgui::*;
 use imgui_wgpu::{Renderer, RendererConfig};
 use imgui_winit_support::WinitPlatform;
+
+use tracing::{debug, error, info, trace, warn};
 
 // --- Settings Struct (Unchanged) ---
 #[repr(C)]
@@ -45,10 +44,10 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        let voxel_level = 3;
+        let voxel_level = 5;
         let voxel_size = 2.0f32.powf(-voxel_level as f32);
         Self {
-            max: 10000.0,
+            max: 10000.0, // not used
             r_inner: 1.0,
             r: 1.0 + 0.8,
             max_height: 5.0,
@@ -60,8 +59,9 @@ impl Default for Settings {
             camera_time_offset: 0.0,
             voxel_level,
             voxel_size,
-            steps: 512 * 2 * 2,
-            max_dist: 600000.0,
+            // steps: 512 * 2 * 2,
+            steps: 512, // Too low values causes artifact around edges
+            max_dist: 20.0,
             min_dist: 0.0001,
             eps: 1e-5,
             light_color: [1.0, 0.9, 0.75, 2.0],
@@ -169,14 +169,19 @@ impl VoxelRenderer {
                         depth_or_array_layers: 1,
                     },
                 );
-                (texture.clone(), texture.create_view(&wgpu::TextureViewDescriptor::default()))
+                (
+                    texture.clone(),
+                    texture.create_view(&wgpu::TextureViewDescriptor::default()),
+                )
             }};
         }
 
         let (rgb_noise_texture, rgb_noise_texture_view) =
             load_texture_2d!("./assets/images/textures/rgbnoise.png", "Rgb noise Texture");
-        let (gray_noise_texture, gray_noise_texture_view) =
-            load_texture_2d!("./assets/images/textures/graynoise.png", "Gray noise Texture");
+        let (gray_noise_texture, gray_noise_texture_view) = load_texture_2d!(
+            "./assets/images/textures/graynoise.png",
+            "Gray noise Texture"
+        );
         let (grain_texture, grain_texture_view) =
             load_texture_2d!("./assets/images/textures/grain.png", "Grain Texture");
         let (dirt_texture, dirt_texture_view) =
@@ -389,11 +394,7 @@ impl VoxelRenderer {
         let voxel_shader = shader_hot_reload.get_shader("voxel.wgsl");
 
         // Create render pipeline with hot reloaded shader
-        let render_pipeline = Self::create_pipeline(
-            &device,
-            &pipeline_layout,
-            &voxel_shader,
-        );
+        let render_pipeline = Self::create_pipeline(&device, &pipeline_layout, &voxel_shader);
 
         Self {
             device,
@@ -468,15 +469,12 @@ impl VoxelRenderer {
     /// Check for shader updates and recreate pipeline if needed
     pub fn check_shader_updates(&mut self) {
         let updated_shaders = self.shader_hot_reload.check_for_updates();
-        
+
         if updated_shaders.contains(&"voxel.wgsl".to_string()) {
-            println!("Reloading voxel shader");
+            info!("Reloading voxel shader");
             let voxel_shader = self.shader_hot_reload.get_shader("voxel.wgsl");
-            self.render_pipeline = Self::create_pipeline(
-                &self.device,
-                &self.pipeline_layout,
-                &voxel_shader,
-            );
+            self.render_pipeline =
+                Self::create_pipeline(&self.device, &self.pipeline_layout, &voxel_shader);
         }
     }
 
@@ -486,7 +484,10 @@ impl VoxelRenderer {
         rpass.set_bind_group(1, &self.texture_bind_group, &[]);
         rpass.set_bind_group(2, &self.voxel_settings_bind_group, &[]);
         rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-        rpass.set_index_buffer(self.vertex_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+        rpass.set_index_buffer(
+            self.vertex_index_buffer.slice(..),
+            wgpu::IndexFormat::Uint16,
+        );
         rpass.draw_indexed(0..INDICES_SQUARE.len() as u32, 0, 0..1);
     }
 
@@ -507,14 +508,9 @@ impl VoxelRenderer {
         let incline_angle = self.sun_incline * std::f32::consts::FRAC_PI_2;
         let y = incline_angle.sin();
         let horizontal_scale = incline_angle.cos();
-        
-        self.voxel_settings.light_direction = [
-            x * horizontal_scale,
-            y,
-            z * horizontal_scale,
-            0.0,
-        ];
-        
+
+        self.voxel_settings.light_direction = [x * horizontal_scale, y, z * horizontal_scale, 0.0];
+
         self.update_settings_buffer();
     }
 }

@@ -3,6 +3,8 @@ use gltf::Gltf;
 use std::path::Path;
 use wgpu::util::DeviceExt;
 
+use tracing::{debug, error, info, trace, warn};
+
 pub struct Model {
     pub meshes: Vec<Mesh>,
     pub materials: Vec<Material>,
@@ -34,7 +36,7 @@ impl Model {
         let gltf = match Gltf::open(path) {
             Ok(gltf) => gltf,
             Err(err) => {
-                eprintln!("Failed to load GLTF from {}: {}", path.display(), err);
+                warn!("Failed to load GLTF from {}: {}", path.display(), err);
                 return None;
             }
         };
@@ -80,7 +82,7 @@ impl Model {
                         match crate::img_utils::RgbaImg::new(texture_path.to_str().unwrap()) {
                             Some(texture) => Some(texture),
                             None => {
-                                eprintln!("Failed to load texture from {}, using fallback", uri);
+                                warn!("Failed to load texture from {}, using fallback", uri);
                                 crate::img_utils::RgbaImg::new("./assets/images/example-img.png")
                             }
                         }
@@ -105,7 +107,7 @@ impl Model {
                     texture_view: None,
                 });
             } else {
-                eprintln!("Couldn't load any texture for material {}, skipping", name);
+                warn!("Couldn't load any texture for material {}, skipping", name);
             }
         }
 
