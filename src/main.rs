@@ -7,6 +7,9 @@ use tracing_subscriber::{EnvFilter, FmtSubscriber};
 use winit::error::EventLoopError;
 use winit::event_loop::{ControlFlow, EventLoop};
 
+mod audio_converter;
+pub use audio_converter::*;
+
 mod app;
 pub use app::*;
 
@@ -74,29 +77,6 @@ pub use color_correction::*;
 //     event_loop.run_app(&mut app)
 // }
 
-fn main() {
-    // Create a sound manager
-    let mut sound_manager = SoundManager::new();
-
-    // Load all sounds from assets/sounds
-    sound_manager.load_sounds().unwrap();
-
-    // List available sound IDs
-    let sound_ids = sound_manager.get_sound_ids();
-    println!("Available sounds: {:?}", sound_ids);
-
-    // Play a sound by its ID (filename without extension)
-    sound_manager.play("missile").unwrap();
-
-    // // Stop a specific sound
-    // sound_manager.stop("explosion").unwrap();
-
-    // // Stop all sounds
-    // sound_manager.stop_all();
-
-    thread::sleep(Duration::from_secs(10));
-}
-
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::Path;
@@ -106,12 +86,113 @@ use std::{fs, thread};
 
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
 
-/// Manages loading and playback of sound files from the assets/sounds directory
+/// Represents a unique sound instance identifier
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SoundInstanceId {
+    sound_id: String,
+    instance_number: u64,
+}
+
+impl SoundInstanceId {
+    /// Creates a new SoundInstanceId
+    fn new(sound_id: &str, instance_number: u64) -> Self {
+        Self {
+            sound_id: sound_id.to_string(),
+            instance_number,
+        }
+    }
+
+    /// Returns the original sound ID
+    pub fn sound_id(&self) -> &str {
+        &self.sound_id
+    }
+
+    /// Returns the instance number
+    pub fn instance_number(&self) -> u64 {
+        self.instance_number
+    }
+}
+
+impl std::fmt::Display for SoundInstanceId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}_{}", self.sound_id, self.instance_number)
+    }
+}
+
+fn main() {
+    // Convert AIF to WAV before starting the app
+    if AudioConverter::check_ffmpeg() {
+        match AudioConverter::convert_aif_to_wav(
+            Path::new("assets/sounds"),
+            Path::new("assets/sounds_wav"),
+        ) {
+            Ok(files) => println!("Converted {} files to WAV format", files.len()),
+            Err(e) => eprintln!("Failed to convert audio files: {}", e),
+        }
+    } else {
+        println!("FFmpeg not found. Install FFmpeg to convert audio files automatically.");
+    }
+
+    // Create a sound manager (now using sounds_wav directory)
+    let mut sound_manager = SoundManager::new();
+
+    // Load all sounds from assets/sounds_wav
+    sound_manager.load_sounds().unwrap();
+
+    // List available sound IDs
+    let sound_ids = sound_manager.get_sound_ids();
+    println!("Available sounds: {:?}", sound_ids);
+
+    // Play multiple instances of the same sound simultaneously
+    println!("Playing multiple instances of the same sound simultaneously");
+
+    // Example 1: Play 6 instances with short delay (overlapping)
+    for _ in 0..6 {
+        let instance_id = sound_manager.play("exp 2").unwrap();
+        println!("Started sound instance: {}", instance_id);
+        thread::sleep(Duration::from_millis(300));
+    }
+
+    // Wait for sounds to finish
+    thread::sleep(Duration::from_secs(3));
+
+    // Example 2: Play 3 instances at exactly the same time
+    println!("\nPlaying 3 instances simultaneously (no delay):");
+    let instance1 = sound_manager.play("exp 2").unwrap();
+    let instance2 = sound_manager.play("exp 2").unwrap();
+    let instance3 = sound_manager.play("exp 2").unwrap();
+
+    println!(
+        "Started instances: {}, {}, {}",
+        instance1, instance2, instance3
+    );
+
+    // Wait for sounds to finish
+    thread::sleep(Duration::from_secs(3));
+
+    // Example 3: Stop a specific instance
+    println!("\nPlaying 3 more instances but stopping one specifically:");
+    let instance1 = sound_manager.play("exp 2").unwrap();
+    let instance2 = sound_manager.play("exp 2").unwrap();
+    let instance3 = sound_manager.play("exp 2").unwrap();
+
+    // Stop just the second instance
+    thread::sleep(Duration::from_millis(500));
+    println!("Stopping instance: {}", instance2);
+    sound_manager.stop_instance(&instance2).unwrap();
+
+    // Wait for remaining sounds to finish
+    thread::sleep(Duration::from_secs(5));
+}
+
+/// Manages loading and playback of sound files from the assets/sounds_wav directory
+/// Supports playing multiple instances of the same sound simultaneously
 pub struct SoundManager {
     sounds: HashMap<String, Arc<Vec<u8>>>,
     output_stream: Option<(OutputStream, OutputStreamHandle)>,
-    sinks: Mutex<HashMap<String, (Arc<Sink>, Instant)>>,
+    sinks: Mutex<HashMap<SoundInstanceId, (Arc<Sink>, Instant)>>,
     cleanup_threshold: Duration,
+    instance_counter: Mutex<u64>,
 }
 
 impl Default for SoundManager {
@@ -130,15 +211,13 @@ impl SoundManager {
             output_stream,
             sinks: Mutex::new(HashMap::new()),
             cleanup_threshold: Duration::from_secs(60), // Clean up sinks after a minute
+            instance_counter: Mutex::new(0),
         }
     }
 
-    /// Loads all AIF/AIFF sounds from the assets/sounds directory
-    ///
-    /// Note: rodio may not directly support AIF/AIFF format. If playback fails,
-    /// consider converting your files to a format rodio supports (like WAV).
+    /// Loads all WAV sounds from the assets/sounds_wav directory
     pub fn load_sounds(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let assets_path = Path::new("assets/sounds");
+        let assets_path = Path::new("assets/sounds_wav");
 
         // Ensure the directory exists
         if !assets_path.exists() {
@@ -153,7 +232,7 @@ impl SoundManager {
                 if let Some(extension) = path.extension() {
                     let ext = extension.to_string_lossy().to_lowercase();
 
-                    if ext == "aif" || ext == "aiff" {
+                    if ext == "wav" {
                         let filename = path.file_stem().unwrap().to_string_lossy().to_string();
                         tracing::info!("Loading sound: {}", filename);
 
@@ -167,24 +246,27 @@ impl SoundManager {
 
         tracing::info!("Loaded {} sounds", self.sounds.len());
 
-        if !self.sounds.is_empty() {
-            tracing::warn!(
-                "Note: rodio may not directly support AIFF format. \
-                           If playback fails, consider converting your files to WAV format \
-                           using a tool like ffmpeg or audacity."
-            );
-        }
-
         Ok(())
     }
 
+    /// Returns the next instance counter value
+    fn next_instance_id(&self) -> u64 {
+        let mut counter = self.instance_counter.lock().unwrap();
+        *counter += 1;
+        *counter
+    }
+
     /// Plays a sound by its ID (filename without extension)
-    pub fn play(&self, sound_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+    /// Each call creates a new instance that plays independently,
+    /// allowing multiple instances of the same sound to play simultaneously
+    /// Returns the unique instance ID which can be used to stop this specific instance
+    pub fn play(&self, sound_id: &str) -> Result<SoundInstanceId, Box<dyn std::error::Error>> {
         // First, clean up any finished sinks
         self.cleanup_finished_sinks();
 
         if let Some(sound_data) = self.sounds.get(sound_id) {
             if let Some((_, stream_handle)) = &self.output_stream {
+                // Create a new sink for this instance
                 let sink = Sink::try_new(stream_handle)?;
                 let cursor = Cursor::new(sound_data.as_slice().to_vec());
 
@@ -193,27 +275,27 @@ impl SoundManager {
                     Ok(source) => source,
                     Err(err) => {
                         tracing::warn!("Failed to decode sound '{}': {}", sound_id, err);
-                        return Err(format!(
-                            "Failed to decode sound '{}': {}. \
-                                          AIFF format may not be directly supported by rodio. \
-                                          Consider converting your files to WAV format.",
-                            sound_id, err
-                        )
-                        .into());
+                        return Err(
+                            format!("Failed to decode sound '{}': {}", sound_id, err).into()
+                        );
                     }
                 };
 
                 sink.append(source);
 
                 let sink = Arc::new(sink);
-                let unique_id = format!("{}_{}", sound_id, Instant::now().elapsed().as_micros());
+
+                // Create a unique ID for this specific instance using our counter
+                let instance_number = self.next_instance_id();
+                let instance_id = SoundInstanceId::new(sound_id, instance_number);
+
                 self.sinks
                     .lock()
                     .unwrap()
-                    .insert(unique_id, (sink.clone(), Instant::now()));
+                    .insert(instance_id.clone(), (sink.clone(), Instant::now()));
 
-                tracing::info!("Playing sound: {}", sound_id);
-                return Ok(());
+                tracing::info!("Playing sound: {} (instance: {})", sound_id, instance_id);
+                return Ok(instance_id);
             } else {
                 return Err("No audio output device available".into());
             }
@@ -228,7 +310,8 @@ impl SoundManager {
         let mut to_remove = Vec::new();
 
         for (id, (sink, _)) in sinks.iter() {
-            if id.starts_with(sound_id) {
+            // Only match exact sound IDs
+            if id.sound_id() == sound_id {
                 sink.stop();
                 to_remove.push(id.clone());
             }
@@ -242,8 +325,24 @@ impl SoundManager {
             sinks.remove(&id);
         }
 
-        tracing::info!("Stopped sound: {}", sound_id);
+        tracing::info!("Stopped all instances of sound: {}", sound_id);
         Ok(())
+    }
+
+    /// Stops a specific instance of a sound by its unique instance ID
+    pub fn stop_instance(
+        &self,
+        instance_id: &SoundInstanceId,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut sinks = self.sinks.lock().unwrap();
+
+        if let Some((sink, _)) = sinks.remove(instance_id) {
+            sink.stop();
+            tracing::info!("Stopped sound instance: {}", instance_id);
+            Ok(())
+        } else {
+            Err(format!("No active playback for instance '{}'", instance_id).into())
+        }
     }
 
     /// Stops all playing sounds
@@ -259,7 +358,7 @@ impl SoundManager {
     fn cleanup_finished_sinks(&self) {
         let mut sinks = self.sinks.lock().unwrap();
         let now = Instant::now();
-        let to_remove: Vec<String> = sinks
+        let to_remove: Vec<SoundInstanceId> = sinks
             .iter()
             .filter(|(_, (sink, created))| {
                 sink.empty() || now.duration_since(*created) > self.cleanup_threshold
