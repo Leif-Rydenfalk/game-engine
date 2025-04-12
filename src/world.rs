@@ -8,6 +8,8 @@ use gilrs::GamepadId;
 use hecs::Entity;
 use hecs::World;
 use std::f32::consts::PI;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
 use tracing::info;
 use tracing::warn;
