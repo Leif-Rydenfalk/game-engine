@@ -7,6 +7,7 @@ use gilrs::Axis;
 use gilrs::GamepadId;
 use hecs::Entity;
 use hecs::World;
+use std::f32::consts::PI;
 use std::time::Duration;
 use tracing::info;
 use tracing::warn;
@@ -42,7 +43,7 @@ pub struct Camera {
 impl Default for Camera {
     fn default() -> Self {
         Self {
-            fov: Rad(std::f32::consts::FRAC_PI_4),
+            fov: Rad(100.0 * PI / 180.0),
             aspect: 16.0 / 9.0,
             near: 0.1,
             far: 10000.0,
