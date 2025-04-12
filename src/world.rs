@@ -78,7 +78,6 @@ pub struct FPSController {
     pub pitch: f32, // Rotation around X axis (up/down)
 }
 
-// In world.rs, modify setup_camera_entity to include the FPSController component
 pub fn setup_camera_entity(world: &mut World, window_size: Option<(u32, u32)>) -> hecs::Entity {
     // Calculate initial aspect ratio based on window size, or use default if not provided
     let aspect = if let Some((width, height)) = window_size {
@@ -97,11 +96,22 @@ pub fn setup_camera_entity(world: &mut World, window_size: Option<(u32, u32)>) -
             ..Default::default()
         },
         FPSController::default(), // Add the FPS controller component
-        TriggerHandler::new(Duration::from_millis(500)),
+        TriggerHandler::new(Duration::from_millis(200)),
     ))
 }
 
-// Replace the update_world function with this FPS controller version
+pub struct Bullet {
+    pub fired_at: Instant,
+}
+
+pub fn setup_world(world: &mut World) {
+    let mut sound_manager = SoundManager::new();
+    sound_manager.load_sounds().unwrap();
+    world.spawn((SoundManagerComponent {
+        inner: Arc::new(Mutex::new(sound_manager)),
+    },));
+}
+
 pub fn update_world(world: &mut World, input: &mut Input, dt: Duration) {
     // Skip if no controllers connected
     if input.connected_controllers_count() == 0 {
@@ -117,10 +127,54 @@ pub fn update_world(world: &mut World, input: &mut Input, dt: Duration) {
         controller_index
     };
 
+    // Find the SoundManagerComponent to use for trigger sounds
+    let sound_manager_entity = world
+        .query::<&SoundManagerComponent>()
+        .iter()
+        .next()
+        .map(|(entity, _)| entity);
+
+    let sound_manager_opt = sound_manager_entity.and_then(|entity| {
+        world
+            .get::<&SoundManagerComponent>(entity)
+            .ok()
+            .map(|comp| comp.inner.clone())
+    });
+
+    let mut bullets_to_spawn = Vec::new();
+
     for (_, trigger_handler) in world.query_mut::<&mut TriggerHandler>() {
+        let previous_state = trigger_handler.state_name();
         let value = input.controller_right_trigger(controller_index);
 
         trigger_handler.process_trigger_input(value);
+        let current_state = trigger_handler.state_name();
+
+        // Play a sound when transitioning to "Firing" state
+        if previous_state != "Firing" && current_state == "Firing" {
+            if let Some(sound_manager) = &sound_manager_opt {
+                // // let random_number = fastrand::i32(1..=3);
+                // // let id = format!("exp {}", random_number);
+                // let id = format!("exp 1");
+
+                // // Try to play the firing sound
+                // // The sound file should be in assets/sounds_wav/fire.wav or similarly named
+                // if let Ok(sound_mgr) = sound_manager.lock() {
+                //     if sound_mgr.has_sound(&id) {
+                //         let _ = sound_mgr.play(&id);
+                //     } else {
+                //         // If none of the expected sounds exist, log a warning
+                //         warn!("No firing sound found in sound manager");
+                //     }
+                // }
+
+                bullets_to_spawn.push(Bullet {
+                    fired_at: Instant::now(),
+                });
+            } else {
+                warn!("no sound manager");
+            }
+        }
 
         // Get vibration values for current state
         let (strong, weak) = trigger_handler.get_vibration_values();
@@ -132,6 +186,46 @@ pub fn update_world(world: &mut World, input: &mut Input, dt: Duration) {
             .gamepad(GamepadId { 0: controller_idx })
             .set_ff_state(strong, weak, Duration::from_millis(10))
             .unwrap();
+    }
+
+    for bullet_to_spawn in bullets_to_spawn {
+        play_explosion_effect(&world);
+
+        world.spawn((bullet_to_spawn,));
+    }
+
+    // Process existing bullets and remove those older than 1 second
+    let mut bullets_to_remove = Vec::new();
+
+    // Find all bullets that have been active for more than 1 second
+    for (entity, (bullet,)) in world.query::<(&Bullet,)>().iter() {
+        let elapsed = bullet.fired_at.elapsed();
+        if elapsed >= Duration::from_secs(1) {
+            bullets_to_remove.push(entity);
+        }
+    }
+
+    // Play explosion sound and remove bullets
+    if !bullets_to_remove.is_empty() && sound_manager_opt.is_some() {
+        // let sound_manager = sound_manager_opt.unwrap();
+
+        // // Try to play explosion sound for each removed bullet
+        // if let Ok(sound_mgr) = sound_manager.lock() {
+        //     let id = format!("exp 2"); // Using a different explosion sound
+
+        //     if sound_mgr.has_sound(&id) {
+        //         for _ in &bullets_to_remove {
+        //             let _ = sound_mgr.play(&id);
+        //         }
+        //     } else {
+        //         warn!("No explosion sound found in sound manager");
+        //     }
+        // }
+
+        // Remove the bullets
+        for entity in bullets_to_remove {
+            let _ = world.despawn(entity);
+        }
     }
 
     let dt_seconds = dt.as_secs_f32();
@@ -213,6 +307,94 @@ pub fn update_world(world: &mut World, input: &mut Input, dt: Duration) {
             // Normalize quaternion to prevent floating-point drift
             transform.rotation = transform.rotation.normalize();
         }
+    }
+}
+
+/// Plays a complex explosion sound by overlapping multiple explosion sounds
+/// with random timing and adds tail sounds at the same time as the last primary sound.
+pub fn play_complex_explosion_sound(sound_manager: Arc<Mutex<SoundManager>>) {
+    // Number of primary explosion sounds to play
+    let primary_count = fastrand::i32(3..=5); // Play 3-5 explosion sounds
+
+    // Create a collection of available sound IDs (4-9)
+    let mut available_sounds: Vec<i32> = (4..=9).collect();
+    // Shuffle the available sounds to select from them randomly
+    fastrand::shuffle(&mut available_sounds);
+
+    // Get the sound manager just once to plan all sounds
+    if let Ok(sound_mgr) = sound_manager.lock() {
+        let mut cumulative_delay = 0;
+
+        // Play the primary explosion sounds
+        for i in 0..primary_count {
+            // Generate a random delay for this sound
+            let delay = if i == 0 {
+                // First sound has a shorter delay
+                fastrand::u64(0..100)
+            } else {
+                // Subsequent sounds have progressively longer delays
+                fastrand::u64(80..250)
+            };
+
+            cumulative_delay += delay;
+
+            // Get a unique sound ID from our shuffled collection
+            // If we need more sounds than available, start reusing from the beginning
+            let sound_index = i as usize % available_sounds.len();
+            let sound_num = available_sounds[sound_index];
+
+            // Format the sound ID
+            let sound_id = format!("exp {}", sound_num);
+
+            // Create playback settings with the appropriate delay
+            let settings = PlaybackSettings {
+                delay_ms: cumulative_delay,
+                pitch: 1.0,
+                volume: 1.0,
+            };
+
+            // Try to play the sound with the calculated delay
+            if sound_mgr.has_sound(&sound_id) {
+                let _ = sound_mgr.play_with_settings(&sound_id, settings.clone());
+            } else {
+                warn!("Sound not found: {}", sound_id);
+            }
+
+            // If this is the last or second-to-last primary explosion sound, add tail sounds
+            if i == primary_count - 1 {
+                let tail_id = format!("exp tail {}", 1);
+
+                if sound_mgr.has_sound(&tail_id) {
+                    let _ = sound_mgr.play_with_settings(&tail_id, settings);
+                } else {
+                    warn!("Tail sound not found: {}", tail_id);
+                }
+            } else if i == primary_count - 2 {
+                let tail_id = format!("exp tail {}", 2);
+
+                if sound_mgr.has_sound(&tail_id) {
+                    let _ = sound_mgr.play_with_settings(&tail_id, settings);
+                } else {
+                    warn!("Tail sound not found: {}", tail_id);
+                }
+            }
+        }
+    }
+}
+
+// Integration function to use with the existing world system
+pub fn play_explosion_effect(world: &World) {
+    // Find the SoundManagerComponent to use for explosion sounds
+    let sound_manager_opt = world
+        .query::<&SoundManagerComponent>()
+        .iter()
+        .next()
+        .map(|(_, comp)| comp.inner.clone());
+
+    if let Some(sound_manager) = sound_manager_opt {
+        play_complex_explosion_sound(sound_manager);
+    } else {
+        warn!("No sound manager available for explosion effect");
     }
 }
 

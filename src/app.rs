@@ -56,6 +56,8 @@ impl<'window> ApplicationHandler for App<'window> {
                 None
             };
 
+            setup_world(&mut self.world);
+
             // Setup camera with correct aspect ratio
             self.camera_entity = Some(crate::world::setup_camera_entity(
                 &mut self.world,

@@ -1,6 +1,7 @@
 // #![feature(portable_simd)]
 
 use crate::app::App;
+use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
 use tracing::{info, Level};
 use tracing_subscriber::{filter::LevelFilter, prelude::*};
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
@@ -52,30 +53,30 @@ pub use bloom::*;
 mod color_correction;
 pub use color_correction::*;
 
-// fn main() -> Result<(), EventLoopError> {
-//     // let subscriber = FmtSubscriber::builder()
-//     //     .with_max_level(Level::TRACE)
-//     //     .finish();
-//     // tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
+fn main() -> Result<(), EventLoopError> {
+    // let subscriber = FmtSubscriber::builder()
+    //     .with_max_level(Level::TRACE)
+    //     .finish();
+    // tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
-//     // let subscriber = FmtSubscriber::builder()
-//     //     .with_env_filter(EnvFilter::from_default_env())
-//     //     .finish();
-//     // tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
+    // let subscriber = FmtSubscriber::builder()
+    //     .with_env_filter(EnvFilter::from_default_env())
+    //     .finish();
+    // tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
-//     tracing_subscriber::registry()
-//         .with(tracing_subscriber::fmt::layer())
-//         .with(tracing_subscriber::filter::filter_fn(|metadata| {
-//             let level = metadata.level();
-//             *level == tracing::Level::INFO || *level == tracing::Level::WARN
-//         }))
-//         .init();
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer())
+        .with(tracing_subscriber::filter::filter_fn(|metadata| {
+            let level = metadata.level();
+            *level == tracing::Level::INFO || *level == tracing::Level::WARN
+        }))
+        .init();
 
-//     let event_loop = EventLoop::new().unwrap();
-//     event_loop.set_control_flow(ControlFlow::Poll);
-//     let mut app = App::default();
-//     event_loop.run_app(&mut app)
-// }
+    let event_loop = EventLoop::new().unwrap();
+    event_loop.set_control_flow(ControlFlow::Poll);
+    let mut app = App::default();
+    event_loop.run_app(&mut app)
+}
 
 use std::collections::HashMap;
 use std::io::Cursor;
@@ -84,7 +85,73 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use std::{fs, thread};
 
-use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
+// use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
+
+// fn main() {
+//     // Convert AIF to WAV before starting the app
+//     if AudioConverter::check_ffmpeg() {
+//         match AudioConverter::convert_aif_to_wav(
+//             Path::new("assets/sounds"),
+//             Path::new("assets/sounds_wav"),
+//         ) {
+//             Ok(files) => println!("Converted {} files to WAV format", files.len()),
+//             Err(e) => eprintln!("Failed to convert audio files: {}", e),
+//         }
+//     } else {
+//         println!("FFmpeg not found. Install FFmpeg to convert audio files automatically.");
+//     }
+
+//     // Create a sound manager (now using sounds_wav directory)
+//     let mut sound_manager = SoundManager::new();
+
+//     // Load all sounds from assets/sounds_wav
+//     sound_manager.load_sounds().unwrap();
+
+//     // List available sound IDs
+//     let sound_ids = sound_manager.get_sound_ids();
+//     println!("Available sounds: {:?}", sound_ids);
+
+//     // Play multiple instances of the same sound simultaneously
+//     println!("Playing multiple instances of the same sound simultaneously");
+
+//     // Example 1: Play 6 instances with short delay (overlapping)
+//     for _ in 0..6 {
+//         let instance_id = sound_manager.play("exp 2").unwrap();
+//         println!("Started sound instance: {}", instance_id);
+//         thread::sleep(Duration::from_millis(300));
+//     }
+
+//     // Wait for sounds to finish
+//     thread::sleep(Duration::from_secs(3));
+
+//     // Example 2: Play 3 instances at exactly the same time
+//     println!("\nPlaying 3 instances simultaneously (no delay):");
+//     let instance1 = sound_manager.play("exp 2").unwrap();
+//     let instance2 = sound_manager.play("exp 2").unwrap();
+//     let instance3 = sound_manager.play("exp 2").unwrap();
+
+//     println!(
+//         "Started instances: {}, {}, {}",
+//         instance1, instance2, instance3
+//     );
+
+//     // Wait for sounds to finish
+//     thread::sleep(Duration::from_secs(3));
+
+//     // Example 3: Stop a specific instance
+//     println!("\nPlaying 3 more instances but stopping one specifically:");
+//     let instance1 = sound_manager.play("exp 2").unwrap();
+//     let instance2 = sound_manager.play("exp 2").unwrap();
+//     let instance3 = sound_manager.play("exp 2").unwrap();
+
+//     // Stop just the second instance
+//     thread::sleep(Duration::from_millis(500));
+//     println!("Stopping instance: {}", instance2);
+//     sound_manager.stop_instance(&instance2).unwrap();
+
+//     // Wait for remaining sounds to finish
+//     thread::sleep(Duration::from_secs(5));
+// }
 
 /// Represents a unique sound instance identifier
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -119,74 +186,36 @@ impl std::fmt::Display for SoundInstanceId {
     }
 }
 
-fn main() {
-    // Convert AIF to WAV before starting the app
-    if AudioConverter::check_ffmpeg() {
-        match AudioConverter::convert_aif_to_wav(
-            Path::new("assets/sounds"),
-            Path::new("assets/sounds_wav"),
-        ) {
-            Ok(files) => println!("Converted {} files to WAV format", files.len()),
-            Err(e) => eprintln!("Failed to convert audio files: {}", e),
+pub struct SoundManagerComponent {
+    pub inner: Arc<Mutex<SoundManager>>,
+}
+
+unsafe impl Send for SoundManager {}
+
+/// Represents playback settings for a sound
+#[derive(Debug, Clone)]
+pub struct PlaybackSettings {
+    /// Delay in milliseconds before the sound starts playing
+    pub delay_ms: u64,
+    /// Pitch multiplier (1.0 = normal, 0.5 = one octave lower, 2.0 = one octave higher)
+    pub pitch: f32,
+    /// Volume multiplier (1.0 = normal, 0.5 = half volume, 2.0 = double volume)
+    pub volume: f32,
+}
+
+impl Default for PlaybackSettings {
+    fn default() -> Self {
+        Self {
+            delay_ms: 0,
+            pitch: 1.0,
+            volume: 1.0,
         }
-    } else {
-        println!("FFmpeg not found. Install FFmpeg to convert audio files automatically.");
     }
-
-    // Create a sound manager (now using sounds_wav directory)
-    let mut sound_manager = SoundManager::new();
-
-    // Load all sounds from assets/sounds_wav
-    sound_manager.load_sounds().unwrap();
-
-    // List available sound IDs
-    let sound_ids = sound_manager.get_sound_ids();
-    println!("Available sounds: {:?}", sound_ids);
-
-    // Play multiple instances of the same sound simultaneously
-    println!("Playing multiple instances of the same sound simultaneously");
-
-    // Example 1: Play 6 instances with short delay (overlapping)
-    for _ in 0..6 {
-        let instance_id = sound_manager.play("exp 2").unwrap();
-        println!("Started sound instance: {}", instance_id);
-        thread::sleep(Duration::from_millis(300));
-    }
-
-    // Wait for sounds to finish
-    thread::sleep(Duration::from_secs(3));
-
-    // Example 2: Play 3 instances at exactly the same time
-    println!("\nPlaying 3 instances simultaneously (no delay):");
-    let instance1 = sound_manager.play("exp 2").unwrap();
-    let instance2 = sound_manager.play("exp 2").unwrap();
-    let instance3 = sound_manager.play("exp 2").unwrap();
-
-    println!(
-        "Started instances: {}, {}, {}",
-        instance1, instance2, instance3
-    );
-
-    // Wait for sounds to finish
-    thread::sleep(Duration::from_secs(3));
-
-    // Example 3: Stop a specific instance
-    println!("\nPlaying 3 more instances but stopping one specifically:");
-    let instance1 = sound_manager.play("exp 2").unwrap();
-    let instance2 = sound_manager.play("exp 2").unwrap();
-    let instance3 = sound_manager.play("exp 2").unwrap();
-
-    // Stop just the second instance
-    thread::sleep(Duration::from_millis(500));
-    println!("Stopping instance: {}", instance2);
-    sound_manager.stop_instance(&instance2).unwrap();
-
-    // Wait for remaining sounds to finish
-    thread::sleep(Duration::from_secs(5));
 }
 
 /// Manages loading and playback of sound files from the assets/sounds_wav directory
 /// Supports playing multiple instances of the same sound simultaneously
+/// with customizable delay, pitch, and volume
 pub struct SoundManager {
     sounds: HashMap<String, Arc<Vec<u8>>>,
     output_stream: Option<(OutputStream, OutputStreamHandle)>,
@@ -256,11 +285,22 @@ impl SoundManager {
         *counter
     }
 
-    /// Plays a sound by its ID (filename without extension)
+    /// Plays a sound by its ID (filename without extension) with default settings
     /// Each call creates a new instance that plays independently,
     /// allowing multiple instances of the same sound to play simultaneously
     /// Returns the unique instance ID which can be used to stop this specific instance
     pub fn play(&self, sound_id: &str) -> Result<SoundInstanceId, Box<dyn std::error::Error>> {
+        self.play_with_settings(sound_id, PlaybackSettings::default())
+    }
+
+    /// Plays a sound by its ID with custom playback settings
+    /// Each call creates a new instance that plays independently
+    /// Returns the unique instance ID which can be used to stop this specific instance
+    pub fn play_with_settings(
+        &self,
+        sound_id: &str,
+        settings: PlaybackSettings,
+    ) -> Result<SoundInstanceId, Box<dyn std::error::Error>> {
         // First, clean up any finished sinks
         self.cleanup_finished_sinks();
 
@@ -268,6 +308,10 @@ impl SoundManager {
             if let Some((_, stream_handle)) = &self.output_stream {
                 // Create a new sink for this instance
                 let sink = Sink::try_new(stream_handle)?;
+
+                // Set the volume
+                sink.set_volume(settings.volume);
+
                 let cursor = Cursor::new(sound_data.as_slice().to_vec());
 
                 // Try to decode the sound
@@ -281,20 +325,54 @@ impl SoundManager {
                     }
                 };
 
-                sink.append(source);
+                // // Apply pitch shifting if needed
+                // let source = if settings.pitch != 1.0 {
+                //     // Using rodio's SampleRateConverter to change pitch
+                //     // This works by changing the playback speed, which affects both pitch and tempo
+                //     let base_sample_rate = source.sample_rate();
+                //     let new_sample_rate = (base_sample_rate as f32 / settings.pitch) as u32;
+                //     Box::new(source.with_sample_rate(new_sample_rate))
+                //         as Box<dyn Source<Item = _> + Send>
+                // } else {
+                //     Box::new(source) as Box<dyn Source<Item = _> + Send>
+                // };
 
-                let sink = Arc::new(sink);
+                let source = Box::new(source) as Box<dyn Source<Item = _> + Send>;
+
+                sink.append(source);
 
                 // Create a unique ID for this specific instance using our counter
                 let instance_number = self.next_instance_id();
                 let instance_id = SoundInstanceId::new(sound_id, instance_number);
+
+                let sink = Arc::new(sink);
+
+                // Apply delay if needed
+                if settings.delay_ms > 0 {
+                    sink.pause();
+
+                    // Spawn a thread to resume the sink after the delay
+                    let sink_clone = sink.clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(Duration::from_millis(settings.delay_ms));
+                        sink_clone.play();
+                    });
+                }
 
                 self.sinks
                     .lock()
                     .unwrap()
                     .insert(instance_id.clone(), (sink.clone(), Instant::now()));
 
-                tracing::info!("Playing sound: {} (instance: {})", sound_id, instance_id);
+                tracing::info!(
+                    "Playing sound: {} (instance: {}, delay: {}ms, pitch: {}, volume: {})",
+                    sound_id,
+                    instance_id,
+                    settings.delay_ms,
+                    settings.pitch,
+                    settings.volume
+                );
+
                 return Ok(instance_id);
             } else {
                 return Err("No audio output device available".into());

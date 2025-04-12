@@ -29,6 +29,7 @@ tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
 # ] } # works with xbox controllers
 gilrs = { path = "./lib/gilrs/gilrs", features = [
     "serde-serialize",
-] } # works with ps controllers  
+] } # works with ps
+fastrand = "2.3.0"
 rodio = "0.17.1"
 cpal = "0.15.2"
