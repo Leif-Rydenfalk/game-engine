@@ -28,8 +28,11 @@ struct TaaCameraUniform {
 @group(1) @binding(4) var output_tex: texture_storage_2d<rgba32float, write>; // Write target (HDR)
 
 // Constants for tuning
-const TAA_BLEND_FACTOR: f32 = 0.98; // History weight (0.9 to 0.98 typical). Higher = smoother, more ghosting risk. Lower = sharper, more jitter.
-const BACKGROUND_DEPTH_THRESHOLD: f32 = 99999.0; // Value indicating no hit (should match depth clear value)
+const TAA_BLEND_FACTOR_MIN: f32 = 0.7; // Blend factor during motion
+const TAA_BLEND_FACTOR_MAX: f32 = 0.9; // Blend factor when stationary (Can be lower than old fixed value!)
+const MOTION_THRESHOLD: f32 = 1.5; // Pixels of motion below which we increase blend factor
+
+const BACKGROUND_DEPTH_THRESHOLD: f32 = 10000000.0; 
 
 // Reconstruct world position assuming depth_value is linear distance 'd' from camera
 fn world_position_from_depth_distance(uv: vec2<f32>, distance: f32) -> vec3<f32> {
@@ -71,6 +74,38 @@ fn clamp_history_aabb(history_color: vec4<f32>, current_uv: vec2<f32>) -> vec4<f
     return clamp(history_color, min_color, max_color);
 }
 
+fn variance_clip(history_color: vec4<f32>, current_uv: vec2<f32>) -> vec4<f32> {
+    let texel_size = 1.0 / camera.resolution;
+    var M1 = vec4(0.0); // Sum of colors
+    var M2 = vec4(0.0); // Sum of squares of colors
+    var N: f32 = 0.0;
+
+    // Sample 3x3 neighborhood (or 5x5 for more robustness)
+    for (var y: i32 = -1; y <= 1; y = y + 1) {
+        for (var x: i32 = -1; x <= 1; x = x + 1) {
+            let offset = vec2(f32(x), f32(y)) * texel_size;
+            // Use textureSampleLevel for explicit LOD 0 sampling
+            let C = textureSampleLevel(current_frame_tex, texture_sampler, current_uv + offset, 0.0);
+            M1 += C;
+            M2 += C * C;
+            N += 1.0;
+        }
+    }
+
+    let mean = M1 / N;
+    // Variance = E[X^2] - (E[X])^2
+    // Add small epsilon to prevent sqrt(negative) due to precision issues
+    let variance = max(vec4(0.0), M2 / N - mean * mean);
+    let stddev = sqrt(variance);
+
+    // Clamp range: mean +/- gamma * stddev
+    // Gamma is a tunable parameter (e.g., 1.0 to 2.0)
+    let gamma = 1.5;
+    let min_clip = mean - gamma * stddev;
+    let max_clip = mean + gamma * stddev;
+
+    return clamp(history_color, min_clip, max_clip);
+}
 
 @compute @workgroup_size(8, 8) // Match dispatch size in Rust code
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
@@ -85,29 +120,29 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     // Calculate UV coordinate for the center of the pixel
     let current_uv = (vec2<f32>(global_id.xy) + vec2(0.5)) / vec2<f32>(screen_dims);
 
-    // 1. Sample Current Frame Color (jittered scene render)
+    // Sample Current Frame Color (jittered scene render)
     let current_color = textureSampleLevel(current_frame_tex, texture_sampler, current_uv, 0.0);
 
-    // 2. Sample Depth (use textureLoad for non-filterable R32Float)
+    // Sample Depth (use textureLoad for non-filterable R32Float)
     // Assumes depth is in the red channel.
     let depth_value = textureLoad(depth_tex, pixel_coord, 0).r;
 
-    // 3. Handle Background Pixels (where ray didn't hit anything)
+    // Handle Background Pixels (where ray didn't hit anything)
     // If depth is very large (or sentinel value), no valid history exists. Output current color.
     if (depth_value >= BACKGROUND_DEPTH_THRESHOLD) {
         textureStore(output_tex, pixel_coord, current_color);
         return;
     }
 
-    // 4. Reconstruct World Position from depth
+    // Reconstruct World Position from depth
     // !! CRITICAL STEP: Assumes depth_value is linear distance !!
     let world_pos = world_position_from_depth_distance(current_uv, depth_value);
 
-    // 5. Reproject World Position to Previous Frame's Clip Space
+    // Reproject World Position to Previous Frame's Clip Space
     // Use the UNJITTERED previous view-projection matrix
     var prev_clip_pos = taa_camera.prev_view_proj * vec4(world_pos, 1.0);
 
-    // 6. Perspective Divide to get Previous Frame's NDC [-1, 1]
+    // Perspective Divide to get Previous Frame's NDC [-1, 1]
     // Check for w <= 0 to avoid division by zero/negative (points behind camera)
      if (prev_clip_pos.w <= 0.0) {
         textureStore(output_tex, pixel_coord, current_color); // Fallback if reprojection fails
@@ -115,10 +150,10 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     }
     prev_clip_pos /= prev_clip_pos.w;
 
-    // 7. Convert Previous Frame's NDC to Previous Frame's UV [0, 1]
+    // Convert Previous Frame's NDC to Previous Frame's UV [0, 1]
     let prev_uv = prev_clip_pos.xy * 0.5 + 0.5;
 
-    // 8. Check if Previous UV is within screen bounds [0, 1]
+    // Check if Previous UV is within screen bounds [0, 1]
     if (prev_uv.x < 0.0 || prev_uv.x > 1.0 || prev_uv.y < 0.0 || prev_uv.y > 1.0) {
          // History is outside the screen (e.g., camera moved revealing new area).
          // Use current color only, no history blend.
@@ -126,16 +161,24 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         return;
     }
 
-    // 9. Sample History Buffer at the reprojected previous UV
+    // Calculate motion vector in pixel space
+    let motion_pixels = abs(current_uv - prev_uv) * camera.resolution;
+    let motion_magnitude = length(motion_pixels); // Magnitude of motion in pixels
+
+    // Sample History Buffer
     let history_color_raw = textureSampleLevel(history_tex, texture_sampler, prev_uv, 0.0);
 
-    // 10. Clamp History Sample to Neighborhood AABB (Anti-Ghosting)
-    let history_color_clamped = clamp_history_aabb(history_color_raw, current_uv);
+    // Clamp History Sample (using AABB or Variance Clipping)
+    let history_color_clamped = variance_clip(history_color_raw, current_uv); // Or clamp_history_aabb
 
-    // 11. Blend Current and (Clamped) History
-    // Simple linear interpolation. More advanced techniques might vary blend factor based on motion magnitude, depth differences etc.
-    let final_color = mix(current_color, history_color_clamped, TAA_BLEND_FACTOR);
+    // Calculate adaptive blend factor
+    // Lerp towards MAX blend factor when motion is low
+    let blend_lerp = 1.0 - saturate(motion_magnitude / MOTION_THRESHOLD);
+    let adaptive_blend_factor = mix(TAA_BLEND_FACTOR_MAX, TAA_BLEND_FACTOR_MIN,  blend_lerp);
 
-    // 12. Write Final TAA Result
+    // Blend Current and (Clamped) History using adaptive factor
+    let final_color = mix(current_color, history_color_clamped, adaptive_blend_factor);
+
+    // Write Final TAA Result
     textureStore(output_tex, pixel_coord, final_color);
 }

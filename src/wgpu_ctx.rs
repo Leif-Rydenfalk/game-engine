@@ -4,6 +4,7 @@ use crate::{
 };
 use cgmath::{Matrix4, Point3, SquareMatrix};
 use hecs::World;
+use rand::Rng;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs;
@@ -505,7 +506,7 @@ impl<'window> WgpuCtx<'window> {
         let width = size.width.max(1);
         let height = size.height.max(1);
         let mut surface_config = surface.get_default_config(&adapter, width, height).unwrap();
-        surface_config.present_mode = wgpu::PresentMode::Fifo;
+        surface_config.present_mode = wgpu::PresentMode::Immediate;
         surface.configure(&device, &surface_config);
 
         (surface, surface_config, adapter, device, queue)
@@ -826,7 +827,6 @@ impl<'window> WgpuCtx<'window> {
         }
     }
 
-    // Add a helper function, perhaps in a camera module or within WgpuCtx
     fn get_jitter_offset(frame_index: u64, width: u32, height: u32) -> [f32; 2] {
         // Use a Halton sequence or similar low-discrepancy sequence for sub-pixel offsets
         // Example using Halton(2, 3) - need a proper implementation
@@ -850,10 +850,12 @@ impl<'window> WgpuCtx<'window> {
         let x = halton(index_in_sequence + 1, 2) - 0.5; // Start index > 0 for Halton
         let y = halton(index_in_sequence + 1, 3) - 0.5;
 
+        const SCALE: f32 = 1.0;
+
         // Convert pixel offset to clip space offset (NDC)
         [
-            x * (2.0 / width as f32),
-            y * (2.0 / height as f32), // Y might need negation depending on NDC convention
+            x * (2.0 / width as f32) * SCALE,
+            y * (2.0 / height as f32) * SCALE, // Y might need negation depending on NDC convention
         ]
     }
 
@@ -865,7 +867,6 @@ impl<'window> WgpuCtx<'window> {
         view: Matrix4<f32>,
         position: [f32; 3],
     ) {
-        // --- TAA Jitter ---
         let jitter = Self::get_jitter_offset(
             self.frame_index,
             self.surface_config.width,
@@ -875,7 +876,7 @@ impl<'window> WgpuCtx<'window> {
         let jitter_matrix =
             Matrix4::from_translation(cgmath::Vector3::new(jitter[0], jitter[1], 0.0));
         let jittered_view_proj = jitter_matrix * view_proj; // Apply jitter *after* projection
-                                                            // --- End TAA Jitter ---
+        let jittered_inv_view_proj = jittered_view_proj.invert().unwrap_or(Matrix4::identity());
 
         let taa_camera_uniform = TAACameraUniform {
             prev_view_proj: self.prev_view_proj.into(), // Send previous frame's VP
@@ -891,8 +892,8 @@ impl<'window> WgpuCtx<'window> {
         );
 
         let camera_uniform = CameraUniform {
-            view_proj: jittered_view_proj.into(),
-            inv_view_proj: inv_view_proj.into(),
+            view_proj: jittered_view_proj.into(), // Send CURRENT JITTERED VP
+            inv_view_proj: jittered_inv_view_proj.into(), // Send CURRENT JITTERED INV VP
             view: view.into(),
             position,
             time: self.time.elapsed().as_secs_f32(),

@@ -31,5 +31,6 @@ gilrs = { path = "./lib/gilrs/gilrs", features = [
     "serde-serialize",
 ] } # works with ps
 fastrand = "2.3.0"
+rand = "0.8"
 rodio = "0.17.1"
 cpal = "0.15.2"

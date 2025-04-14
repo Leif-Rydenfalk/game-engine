@@ -138,15 +138,15 @@ impl<'window> ApplicationHandler for App<'window> {
                         .map(|t| now.duration_since(t))
                         .unwrap_or_default();
 
-                    let target_framerate: Duration =
+                    let target_frame_duration: Duration =
                         Duration::from_millis(if !window.is_minimized().unwrap_or_default() {
-                            10
+                            5
                         } else {
                             200
                         });
 
-                    if dt < target_framerate {
-                        thread::sleep(target_framerate.saturating_sub(dt));
+                    if dt < target_frame_duration {
+                        thread::sleep(target_frame_duration.saturating_sub(dt));
                     }
 
                     let now = Instant::now();

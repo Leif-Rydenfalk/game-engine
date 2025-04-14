@@ -315,10 +315,10 @@ fn fs_main(input: VertexOutput) -> FragmentOutput {
     } 
 
     // --- Apply fog (optional, applied before debug views) ---
-    let dist_factor = max(0.0, t - 50.0);
-    let fog_scale = 0.0001;
+    let dist_factor = max(0.0, t - 20.0);
+    let fog_scale = 0.001;
     let fog_amount = exp(-dist_factor * fog_scale);
-    col = mix(vec3f(1.0), col, fog_amount); // Mix towards white fog
+    col = mix(vec3f(0.4), col, fog_amount); // Mix towards white fog
 
     // --- Debug visualizations ---
     if settings.show_normals != 0 && hit.is_hit {
