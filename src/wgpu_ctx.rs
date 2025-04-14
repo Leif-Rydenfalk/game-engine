@@ -193,10 +193,6 @@ pub struct WgpuCtx<'window> {
     camera_bind_group_layout: wgpu::BindGroupLayout,
     camera_bind_group: wgpu::BindGroup,
 
-    // Depth resources
-    depth_texture: wgpu::Texture,
-    depth_texture_view: wgpu::TextureView,
-
     // Rendering resources
     models: Vec<Model>,
     render_texture_bind_group_layout: Arc<wgpu::BindGroupLayout>,
@@ -221,10 +217,7 @@ pub struct WgpuCtx<'window> {
 
     // Renderers and UI
     pub imgui: ImguiState,
-    pub render_mode: RenderMode,
     voxel_renderer: VoxelRenderer,
-    atmosphere_renderer: AtmosphereRenderer,
-    atmosphere_output_bind_group: wgpu::BindGroup,
 
     // Custom Voxel Depth Buffer
     voxel_depth_texture: wgpu::Texture,
@@ -378,8 +371,6 @@ impl<'window> WgpuCtx<'window> {
             camera_buffer,
             camera_bind_group_layout,
             camera_bind_group,
-            depth_texture,
-            depth_texture_view,
             models: Vec::new(),
             render_texture_bind_group_layout,
             render_texture,
@@ -395,10 +386,7 @@ impl<'window> WgpuCtx<'window> {
             time: Instant::now(),
             hidpi_factor: window.scale_factor(),
             imgui,
-            render_mode: RenderMode::Voxel, // Default to atmosphere rendering
             voxel_renderer,
-            atmosphere_renderer,
-            atmosphere_output_bind_group,
             voxel_depth_texture,
             voxel_depth_texture_view,
         }
@@ -756,12 +744,6 @@ impl<'window> WgpuCtx<'window> {
         self.surface_config.height = height.max(1);
         self.surface.configure(&self.device, &self.surface_config);
 
-        // Recreate depth texture
-        let (depth_texture, depth_texture_view) =
-            Self::create_depth_texture(&self.device, &self.surface_config);
-        self.depth_texture = depth_texture;
-        self.depth_texture_view = depth_texture_view;
-
         // Recreate custom depth texture (R32Float)
         let (voxel_depth_texture, voxel_depth_texture_view) = Self::create_color_texture(
             &self.device,
@@ -807,11 +789,6 @@ impl<'window> WgpuCtx<'window> {
             ],
             label: Some("final_texture_bind_group"),
         });
-
-        // Update atmosphere output bind group
-        self.atmosphere_output_bind_group = self
-            .atmosphere_renderer
-            .create_output_bind_group(&self.device, &self.render_texture_view);
 
         // Update post-processing effects
         self.bloom_effect.resize(
@@ -869,12 +846,6 @@ impl<'window> WgpuCtx<'window> {
                     self.final_render_pipeline = final_render_pipeline;
                     info!("Reloaded final conversion shader");
                 }
-                "atmosphere.wgsl" => {
-                    // Reload atmosphere compute shader
-                    let atmosphere_shader = self.shader_hot_reload.get_shader("atmosphere.wgsl");
-                    self.atmosphere_renderer.update_shader(&atmosphere_shader);
-                    info!("Reloaded atmosphere compute shader");
-                }
                 _ => {}
             }
         }
@@ -901,82 +872,58 @@ impl<'window> WgpuCtx<'window> {
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
-        // Render scene based on the selected rendering mode
-        match self.render_mode {
-            RenderMode::Voxel => {
-                // Render voxel scene to render_texture AND voxel_depth_texture
-                {
-                    let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("Voxel Render Pass"),
-                        color_attachments: &[
-                            // Attachment 0: Main Color (@location(0) in shader)
-                            Some(wgpu::RenderPassColorAttachment {
-                                view: &self.render_texture_view, // Your HDR color target
-                                resolve_target: None,
-                                ops: wgpu::Operations {
-                                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                                        // Clear color target
-                                        r: 0.0,
-                                        g: 0.0,
-                                        b: 0.0,
-                                        a: 1.0,
-                                    }),
-                                    store: wgpu::StoreOp::Store,
-                                },
+        // Render voxel scene to render_texture AND voxel_depth_texture
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Voxel Render Pass"),
+                color_attachments: &[
+                    // Attachment 0: Main Color (@location(0) in shader)
+                    Some(wgpu::RenderPassColorAttachment {
+                        view: &self.render_texture_view, // Your HDR color target
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color {
+                                // Clear color target
+                                r: 0.0,
+                                g: 0.0,
+                                b: 0.0,
+                                a: 1.0,
                             }),
-                            // Attachment 1: Custom Depth (@location(1) in shader)
-                            Some(wgpu::RenderPassColorAttachment {
-                                view: &self.voxel_depth_texture_view, // The new depth target
-                                resolve_target: None,
-                                ops: wgpu::Operations {
-                                    // Clear depth to max distance (infinity representation)
-                                    // Use f32::MAX or a large known value like settings.max_dist
-                                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                                        r: f32::MAX as f64, // Clear R channel (R32Float)
-                                        g: 0.0,
-                                        b: 0.0,
-                                        a: 0.0, // Other channels ignored
-                                    }),
-                                    store: wgpu::StoreOp::Store, // Store the calculated depth
-                                },
+                            store: wgpu::StoreOp::Store,
+                        },
+                    }),
+                    // Attachment 1: Custom Depth (@location(1) in shader)
+                    Some(wgpu::RenderPassColorAttachment {
+                        view: &self.voxel_depth_texture_view, // The new depth target
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            // Clear depth to max distance (infinity representation)
+                            // Use f32::MAX or a large known value like settings.max_dist
+                            load: wgpu::LoadOp::Clear(wgpu::Color {
+                                r: f32::MAX as f64, // Clear R channel (R32Float)
+                                g: 0.0,
+                                b: 0.0,
+                                a: 0.0, // Other channels ignored
                             }),
-                        ],
-                        depth_stencil_attachment: None, // Not using standard depth buffer
-                        timestamp_writes: None,
-                        occlusion_query_set: None,
-                    });
+                            store: wgpu::StoreOp::Store, // Store the calculated depth
+                        },
+                    }),
+                ],
+                depth_stencil_attachment: None, // Not using standard depth buffer
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
 
-                    // Set camera bind group (index 0)
-                    render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+            // Set camera bind group (index 0)
+            render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
 
-                    // Render voxels (writes to both attachments configured above)
-                    self.voxel_renderer.render(&mut render_pass);
-                } // End Voxel Render Pass Scope
+            // Render voxels (writes to both attachments configured above)
+            self.voxel_renderer.render(&mut render_pass);
+        } // End Voxel Render Pass Scope
 
-                // --- Now you can use self.voxel_depth_texture_view ---
-                // Example: Pass it to a post-processing effect
-                // self.depth_of_field_effect.apply(&mut encoder, &self.voxel_depth_texture_view, ...);
-            }
-            RenderMode::Atmosphere => {
-                // Render atmosphere directly to render_texture using compute shader
-                {
-                    let mut compute_pass =
-                        encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                            label: Some("Atmosphere Compute Pass"),
-                            timestamp_writes: None,
-                        });
-
-                    compute_pass.set_bind_group(1, &self.camera_bind_group, &[]); // Camera is at binding 1
-                    self.atmosphere_renderer.render(
-                        &mut compute_pass,
-                        &self.atmosphere_output_bind_group,
-                        self.surface_config.width,
-                        self.surface_config.height,
-                    );
-                }
-            }
-        }
-
+        // --- Now you can use self.voxel_depth_texture_view ---
+        // Example: Pass it to a post-processing effect
+        // self.depth_of_field_effect.apply(&mut encoder, &self.voxel_depth_texture_view, ...);
         // // Apply post-processing effects (all on Rgba32Float textures)
         // self.bloom_effect
         //     .render(&mut encoder, &self.render_texture_view);
@@ -1077,59 +1024,31 @@ impl<'window> WgpuCtx<'window> {
                     self.time = Instant::now(); // This resets the time to the current moment
                 }
 
-                // // Render mode selection
-                // ui.separator();
-                // ui.text("Render Mode");
+                // Voxel settings controls
+                ui.separator();
+                ui.text("Voxel Settings");
 
-                // let mut is_voxel = matches!(self.render_mode, RenderMode::Voxel);
-                // if ui.radio_button("Voxel", &mut is_voxel, is_voxel) && !is_voxel {
-                //     self.render_mode = RenderMode::Voxel;
-                //     is_voxel = true;
-                // }
-                // if ui.radio_button("Atmosphere", &mut is_voxel, !is_voxel) && is_voxel {
-                //     self.render_mode = RenderMode::Atmosphere;
-                //     is_voxel = false;
-                // }
+                // Visualization options
+                let mut show_normals = self.voxel_renderer.voxel_settings.show_normals != 0;
+                if ui.checkbox("Show Normals", &mut show_normals) {
+                    self.voxel_renderer.voxel_settings.show_normals =
+                        if show_normals { 1 } else { 0 };
+                    self.voxel_renderer.update_settings_buffer();
+                }
 
-                // Show settings based on the current rendering mode
-                match self.render_mode {
-                    RenderMode::Voxel => {
-                        // Voxel settings controls
-                        ui.separator();
-                        ui.text("Voxel Settings");
+                let mut show_steps = self.voxel_renderer.voxel_settings.show_steps != 0;
+                if ui.checkbox("Show Ray Steps", &mut show_steps) {
+                    self.voxel_renderer.voxel_settings.show_steps = if show_steps { 1 } else { 0 };
+                    self.voxel_renderer.update_settings_buffer();
+                }
 
-                        // Visualization options
-                        let mut show_normals = self.voxel_renderer.voxel_settings.show_normals != 0;
-                        if ui.checkbox("Show Normals", &mut show_normals) {
-                            self.voxel_renderer.voxel_settings.show_normals =
-                                if show_normals { 1 } else { 0 };
-                            self.voxel_renderer.update_settings_buffer();
-                        }
-
-                        let mut show_steps = self.voxel_renderer.voxel_settings.show_steps != 0;
-                        if ui.checkbox("Show Ray Steps", &mut show_steps) {
-                            self.voxel_renderer.voxel_settings.show_steps =
-                                if show_steps { 1 } else { 0 };
-                            self.voxel_renderer.update_settings_buffer();
-                        }
-
-                        if ui.slider(
-                            "Voxel Size",
-                            0.0,
-                            1.0,
-                            &mut self.voxel_renderer.voxel_settings.voxel_size,
-                        ) {
-                            self.voxel_renderer.update_settings_buffer();
-                        }
-                    }
-                    RenderMode::Atmosphere => {
-                        // Atmosphere settings controls
-                        ui.separator();
-                        ui.text("Atmosphere Settings");
-
-                        // Add atmosphere-specific settings here when needed
-                        ui.text("No configurable atmosphere settings available yet.");
-                    }
+                if ui.slider(
+                    "Voxel Size",
+                    0.0,
+                    1.0,
+                    &mut self.voxel_renderer.voxel_settings.voxel_size,
+                ) {
+                    self.voxel_renderer.update_settings_buffer();
                 }
 
                 // Add shader hot reload section to UI
@@ -1169,10 +1088,6 @@ impl<'window> WgpuCtx<'window> {
                     self.final_render_pipeline = final_render_pipeline;
 
                     self.voxel_renderer.reload_shader();
-
-                    // Force reload atmosphere shader
-                    let atmosphere_shader = self.shader_hot_reload.get_shader("atmosphere.wgsl");
-                    self.atmosphere_renderer.update_shader(&atmosphere_shader);
 
                     info!("Forced reload of all shaders");
                 }
