@@ -22,12 +22,12 @@ impl SkyRenderer {
     pub fn new(
         device: Arc<wgpu::Device>,
         queue: Arc<wgpu::Queue>,
-        camera_bind_group_layout: &wgpu::BindGroupLayout,
+        camera_bind_group_layout: &wgpu::BindGroupLayout, // Group 0
         shader_hot_reload: Arc<ShaderHotReload>,
-        output_format: wgpu::TextureFormat, // The format of the texture we render to (Rgba32Float)
-        static_textures: Arc<StaticTextures>,
+        output_format: wgpu::TextureFormat,
+        static_textures: Arc<StaticTextures>, // <-- Add parameter (Group 2)
     ) -> Self {
-        // Layout for binding the custom depth texture (R32Float) and a sampler
+        // Layout for binding the custom depth texture (R32Float) and a sampler (Group 1)
         let depth_texture_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Sky Depth Texture Bind Group Layout"),
@@ -37,7 +37,7 @@ impl SkyRenderer {
                         binding: 0,
                         visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: false }, // R32Float isn't filterable
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
                             view_dimension: wgpu::TextureViewDimension::D2,
                             multisampled: false,
                         },
@@ -47,14 +47,12 @@ impl SkyRenderer {
                     wgpu::BindGroupLayoutEntry {
                         binding: 1,
                         visibility: wgpu::ShaderStages::FRAGMENT,
-                        // Use NonFiltering if you only use textureLoad
                         ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
                         count: None,
                     },
                 ],
             });
 
-        // Create a simple sampler
         let depth_sampler = Arc::new(device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Sky Depth Sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -66,17 +64,19 @@ impl SkyRenderer {
             ..Default::default()
         }));
 
-        // Create pipeline layout: Camera (0), Depth+Sampler (1), Settings (2)
+        // Create pipeline layout: Camera (0), Depth+Sampler (1), Static Textures (2)
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Sky Render Pipeline Layout"),
-            bind_group_layouts: &[camera_bind_group_layout, &depth_texture_bind_group_layout],
+            bind_group_layouts: &[
+                camera_bind_group_layout,                   // Group 0
+                &depth_texture_bind_group_layout,           // Group 1
+                &static_textures.texture_bind_group_layout, // Group 2 <-- Use layout from static_textures
+            ],
             push_constant_ranges: &[],
         });
 
-        // Get the initial sky shader
         let sky_shader = shader_hot_reload.get_shader("sky.wgsl");
 
-        // Create the render pipeline
         let render_pipeline =
             Self::create_pipeline(&device, &pipeline_layout, &sky_shader, output_format);
 
@@ -88,12 +88,12 @@ impl SkyRenderer {
             shader_hot_reload,
             depth_texture_bind_group_layout,
             depth_sampler,
-            depth_texture_bind_group: None, // Will be created on first resize/draw
-            static_textures,
+            depth_texture_bind_group: None,
+            static_textures, // <-- Store the Arc
         }
     }
 
-    /// Creates the graphics pipeline for sky rendering
+    // create_pipeline remains the same
     fn create_pipeline(
         device: &wgpu::Device,
         pipeline_layout: &wgpu::PipelineLayout,
@@ -114,10 +114,7 @@ impl SkyRenderer {
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: output_format,
-                    // Blend state might be needed if you want transparency later,
-                    // but for opaque sky replacing background, None/Replace is fine.
-                    // Use AlphaBlending if sky can be semi-transparent.
-                    blend: None,
+                    blend: None, // Keep as None/Replace for opaque sky
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -136,7 +133,7 @@ impl SkyRenderer {
         })
     }
 
-    /// Updates the bind group containing the depth texture view. Call this on resize.
+    // update_depth_texture_bind_group remains the same
     pub fn update_depth_texture_bind_group(&mut self, depth_texture_view: &wgpu::TextureView) {
         self.depth_texture_bind_group =
             Some(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -155,7 +152,7 @@ impl SkyRenderer {
             }));
     }
 
-    /// Checks for shader updates and recreates the pipeline if necessary.
+    // check_shader_updates remains the same (it uses the stored pipeline_layout which is now correct)
     pub fn check_shader_updates(&mut self, output_format: wgpu::TextureFormat) {
         if self
             .shader_hot_reload
@@ -164,6 +161,7 @@ impl SkyRenderer {
         {
             info!("Reloading sky shader");
             let sky_shader = self.shader_hot_reload.get_shader("sky.wgsl");
+            // The pipeline layout passed here now includes the texture layout
             self.render_pipeline = Self::create_pipeline(
                 &self.device,
                 &self.pipeline_layout,
@@ -173,15 +171,15 @@ impl SkyRenderer {
         }
     }
 
-    /// Add this renderer's pass to draw the sky
+    // Update render to bind the static textures group
     pub fn render<'rpass>(&'rpass self, rpass: &mut wgpu::RenderPass<'rpass>) {
         if let Some(depth_bind_group) = &self.depth_texture_bind_group {
             rpass.set_pipeline(&self.render_pipeline);
-            rpass.set_bind_group(1, depth_bind_group, &[]);
-            // Draw the fullscreen quad (4 vertices for triangle strip)
+            // Group 0 (Camera) is assumed to be set by the caller or a previous pass if shared
+            rpass.set_bind_group(1, depth_bind_group, &[]); // Bind depth texture + sampler
+            rpass.set_bind_group(2, &self.static_textures.texture_bind_group, &[]); // <-- Bind static textures
             rpass.draw(0..4, 0..1);
         } else {
-            // This shouldn't happen after the first frame/resize, but good to check.
             tracing::warn!("SkyRenderer depth_texture_bind_group not set, skipping render.");
         }
     }

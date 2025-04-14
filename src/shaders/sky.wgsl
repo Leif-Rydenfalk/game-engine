@@ -61,7 +61,10 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
 
     // If depth is very large (meaning voxel ray missed), draw sky
     if depth >= 100000000.0 {
-        return vec4f(0.1, 0.2, 1.0, 1.0);
+         let noise = textureSample(rgb_noise_texture, terrain_sampler, input.position.xy / camera.resolution).rgb;
+        return vec4(noise * 0.5 + vec3f(0.1, 0.2, 0.5), 1.0); // Mix noise with blue
+
+        // return vec4f(0.1, 0.2, 1.0, 1.0);
     } else {
         // Voxel terrain is here, discard this fragment so terrain shows through
         discard;
