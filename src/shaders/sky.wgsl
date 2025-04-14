@@ -3,6 +3,13 @@
 @group(0) @binding(0) var<uniform> camera: CameraUniform;
 @group(1) @binding(0) var depth_texture: texture_2d<f32>; // Read R32Float depth
 @group(1) @binding(1) var depth_sampler: sampler;       // Needed even for textureLoad
+@group(2) @binding(0) var rgb_noise_texture: texture_2d<f32>;
+@group(2) @binding(1) var gray_noise_texture: texture_2d<f32>;
+@group(2) @binding(2) var gray_cube_noise_texture: texture_3d<f32>; 
+@group(2) @binding(3) var grain_texture: texture_2d<f32>; 
+@group(2) @binding(4) var dirt_texture: texture_2d<f32>;  
+@group(2) @binding(5) var pebble_texture: texture_2d<f32>;  
+@group(2) @binding(6) var terrain_sampler: sampler; // Must use repeat mode
 
 // Shared structs (could be moved to a common file if larger)
 struct CameraUniform {

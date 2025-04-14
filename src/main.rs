@@ -38,6 +38,9 @@ pub use wgpu_ctx::*;
 mod img_utils;
 pub use img_utils::*;
 
+mod textures;
+pub use textures::*;
+
 mod vertex;
 pub use vertex::*;
 

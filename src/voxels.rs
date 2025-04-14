@@ -95,18 +95,10 @@ pub struct VoxelRenderer {
     pub render_pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
     vertex_index_buffer: wgpu::Buffer,
-    texture_bind_group_layout: wgpu::BindGroupLayout,
-    texture_bind_group: wgpu::BindGroup,
     pub voxel_settings: Settings,
     voxel_settings_buffer: wgpu::Buffer,
     voxel_settings_bind_group: wgpu::BindGroup,
-    rgb_noise_texture: wgpu::Texture,
-    gray_noise_texture: wgpu::Texture,
-    gray_noise_cube_texture: wgpu::Texture,
-    grain_texture: wgpu::Texture,
-    dirt_texture: wgpu::Texture,
-    pebble_texture: wgpu::Texture,
-    texture_sampler: Arc<wgpu::Sampler>,
+    static_textures: Arc<StaticTextures>,
     shader_hot_reload: Arc<ShaderHotReload>,
     pub pipeline_layout: wgpu::PipelineLayout,
 }
@@ -118,225 +110,8 @@ impl VoxelRenderer {
         queue: Arc<wgpu::Queue>,
         camera_bind_group_layout: &wgpu::BindGroupLayout,
         shader_hot_reload: Arc<ShaderHotReload>,
+        static_textures: Arc<StaticTextures>,
     ) -> Self {
-        // Texture sampler for voxel textures
-        let texture_sampler = Arc::new(device.create_sampler(&SamplerDescriptor {
-            address_mode_u: wgpu::AddressMode::Repeat,
-            address_mode_v: wgpu::AddressMode::Repeat,
-            address_mode_w: wgpu::AddressMode::Repeat,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        }));
-
-        // Load voxel textures
-        macro_rules! load_texture_2d {
-            ($path:expr, $label:expr) => {{
-                let img = RgbaImg::new($path).unwrap();
-                let texture = device.create_texture(&wgpu::TextureDescriptor {
-                    label: Some($label),
-                    size: wgpu::Extent3d {
-                        width: img.width,
-                        height: img.height,
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
-                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                    view_formats: &[],
-                });
-                queue.write_texture(
-                    wgpu::TexelCopyTextureInfo {
-                        texture: &texture,
-                        mip_level: 0,
-                        origin: wgpu::Origin3d::ZERO,
-                        aspect: wgpu::TextureAspect::All,
-                    },
-                    &img.bytes,
-                    wgpu::TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some(4 * img.width),
-                        rows_per_image: Some(img.height),
-                    },
-                    wgpu::Extent3d {
-                        width: img.width,
-                        height: img.height,
-                        depth_or_array_layers: 1,
-                    },
-                );
-                (
-                    texture.clone(),
-                    texture.create_view(&wgpu::TextureViewDescriptor::default()),
-                )
-            }};
-        }
-
-        let (rgb_noise_texture, rgb_noise_texture_view) =
-            load_texture_2d!("./assets/images/textures/rgbnoise.png", "Rgb noise Texture");
-        let (gray_noise_texture, gray_noise_texture_view) = load_texture_2d!(
-            "./assets/images/textures/graynoise.png",
-            "Gray noise Texture"
-        );
-        let (grain_texture, grain_texture_view) =
-            load_texture_2d!("./assets/images/textures/grain.png", "Grain Texture");
-        let (dirt_texture, dirt_texture_view) =
-            load_texture_2d!("./assets/images/textures/mud.png", "Dirt Texture");
-        let (pebble_texture, pebble_texture_view) =
-            load_texture_2d!("./assets/images/textures/pebble.png", "Pebble Texture");
-
-        let gray_noise_cube_data =
-            std::fs::read("./assets/images/textures/graynoise_32x32x32_cube.bin")
-                .expect("Failed to read gray noise cube")[20..20 + 32 * 32 * 32]
-                .to_vec();
-        let gray_noise_cube_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Gray Noise Cube Texture"),
-            size: wgpu::Extent3d {
-                width: 32,
-                height: 32,
-                depth_or_array_layers: 32,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D3,
-            format: wgpu::TextureFormat::R8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &gray_noise_cube_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &gray_noise_cube_data,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(32),
-                rows_per_image: Some(32),
-            },
-            wgpu::Extent3d {
-                width: 32,
-                height: 32,
-                depth_or_array_layers: 32,
-            },
-        );
-        let gray_noise_cube_texture_view =
-            gray_noise_cube_texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-        // Texture bind group layout
-        let texture_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D3,
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 3,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 4,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 5,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 6,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                ],
-                label: Some("texture_bind_group_layout"),
-            });
-
-        // Texture bind group
-        let texture_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &texture_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&rgb_noise_texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&gray_noise_texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&gray_noise_cube_texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::TextureView(&grain_texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: wgpu::BindingResource::TextureView(&dirt_texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: wgpu::BindingResource::TextureView(&pebble_texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 6,
-                    resource: wgpu::BindingResource::Sampler(&texture_sampler),
-                },
-            ],
-            label: Some("texture_bind_group"),
-        });
-
         // Voxel settings bind group layout
         let voxel_settings_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -382,7 +157,7 @@ impl VoxelRenderer {
             label: Some("Voxel Render Pipeline Layout"),
             bind_group_layouts: &[
                 camera_bind_group_layout,
-                &texture_bind_group_layout,
+                &static_textures.texture_bind_group_layout,
                 &voxel_settings_bind_group_layout,
             ],
             push_constant_ranges: &[],
@@ -406,18 +181,10 @@ impl VoxelRenderer {
             render_pipeline,
             vertex_buffer,
             vertex_index_buffer,
-            texture_bind_group_layout,
-            texture_bind_group,
             voxel_settings,
             voxel_settings_buffer,
             voxel_settings_bind_group,
-            rgb_noise_texture,
-            gray_noise_texture,
-            gray_noise_cube_texture,
-            grain_texture,
-            dirt_texture,
-            pebble_texture,
-            texture_sampler,
+            static_textures,
             shader_hot_reload,
             pipeline_layout,
         }
@@ -509,7 +276,7 @@ impl VoxelRenderer {
     ) {
         rpass.set_pipeline(&self.render_pipeline);
         // Bind groups remain the same (camera @ 0 is set outside, textures @ 1, settings @ 2)
-        rpass.set_bind_group(1, &self.texture_bind_group, &[]);
+        rpass.set_bind_group(1, &self.static_textures.texture_bind_group, &[]);
         rpass.set_bind_group(2, &self.voxel_settings_bind_group, &[]);
         rpass.draw(0..4, 0..1); // 4 vertices for TriangleStrip
     }

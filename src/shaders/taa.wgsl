@@ -28,9 +28,11 @@ struct TaaCameraUniform {
 @group(1) @binding(4) var output_tex: texture_storage_2d<rgba32float, write>; // Write target (HDR)
 
 // Constants for tuning
-const TAA_BLEND_FACTOR_MIN: f32 = 0.7; // Blend factor during motion
-const TAA_BLEND_FACTOR_MAX: f32 = 0.9; // Blend factor when stationary (Can be lower than old fixed value!)
-const MOTION_THRESHOLD: f32 = 1.5; // Pixels of motion below which we increase blend factor
+const TAA_BLEND_FACTOR_MIN: f32 = 0.7;
+const TAA_BLEND_FACTOR_MAX: f32 = 0.9;
+// const TAA_BLEND_FACTOR_MIN: f32 = 0.0;
+// const TAA_BLEND_FACTOR_MAX: f32 = 0.4;
+const MOTION_THRESHOLD: f32 = 0.5; 
 
 const BACKGROUND_DEPTH_THRESHOLD: f32 = 10000000.0; 
 

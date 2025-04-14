@@ -1,6 +1,6 @@
 use crate::{
     BloomEffect, Camera, ColorCorrectionEffect, ColorCorrectionUniform, ImguiState, Model,
-    ShaderHotReload, SkyRenderer, Transform, VoxelRenderer,
+    ShaderHotReload, SkyRenderer, StaticTextures, Transform, VoxelRenderer,
 };
 use cgmath::{Matrix4, Point3, SquareMatrix};
 use hecs::World;
@@ -319,12 +319,16 @@ impl<'window> WgpuCtx<'window> {
                 &final_shader,
             );
 
+        let static_textures =
+            Arc::new(StaticTextures::new(Arc::clone(&device), Arc::clone(&queue)));
+
         // Initialize voxel renderer
         let voxel_renderer = VoxelRenderer::new(
             Arc::clone(&device),
             Arc::clone(&queue),
             &camera_bind_group_layout,
             Arc::clone(&shader_hot_reload),
+            static_textures.clone(),
         );
 
         // --- Initialize SkyRenderer ---
@@ -334,6 +338,7 @@ impl<'window> WgpuCtx<'window> {
             &camera_bind_group_layout,
             Arc::clone(&shader_hot_reload),
             wgpu::TextureFormat::Rgba32Float, // Sky renders to the same HDR target
+            static_textures,
         );
         // Initialize its depth texture bind group immediately
         sky_renderer.update_depth_texture_bind_group(&voxel_depth_texture_view);
@@ -850,14 +855,44 @@ impl<'window> WgpuCtx<'window> {
         let x = halton(index_in_sequence + 1, 2) - 0.5; // Start index > 0 for Halton
         let y = halton(index_in_sequence + 1, 3) - 0.5;
 
-        const SCALE: f32 = 1.0;
-
         // Convert pixel offset to clip space offset (NDC)
         [
-            x * (2.0 / width as f32) * SCALE,
-            y * (2.0 / height as f32) * SCALE, // Y might need negation depending on NDC convention
+            x * (2.0 / width as f32),
+            y * (2.0 / height as f32), // Y might need negation depending on NDC convention
         ]
     }
+
+    // fn get_jitter_offset(frame_index: u64, width: u32, height: u32) -> [f32; 2] {
+    //     // Use a Halton sequence or similar low-discrepancy sequence for sub-pixel offsets
+    //     // Example using Halton(2, 3) - need a proper implementation
+    //     fn halton(index: u64, base: u64) -> f32 {
+    //         let mut result = 0.0;
+    //         let mut f = 1.0 / base as f32;
+    //         let mut i = index;
+    //         while i > 0 {
+    //             result += f * (i % base) as f32;
+    //             i /= base;
+    //             f /= base as f32;
+    //         }
+    //         result
+    //     }
+
+    //     // Sequence length, e.g., 8 or 16 frames
+    //     const JITTER_SEQUENCE_LENGTH: u64 = 8;
+    //     let index_in_sequence = frame_index % JITTER_SEQUENCE_LENGTH;
+
+    //     // Generate offset in range [-0.5, 0.5] pixels
+    //     let x = halton(index_in_sequence + 1, 2) - 0.5; // Start index > 0 for Halton
+    //     let y = halton(index_in_sequence + 1, 3) - 0.5;
+
+    //     const SCALE: f32 = 1.0;
+
+    //     // Convert pixel offset to clip space offset (NDC)
+    //     [
+    //         x * (2.0 / width as f32) * SCALE,
+    //         y * (2.0 / height as f32) * SCALE, // Y might need negation depending on NDC convention
+    //     ]
+    // }
 
     /// Updates the camera uniform buffer
     pub fn update_camera_uniform(

@@ -1,5 +1,5 @@
 // src/sky_renderer.rs
-use crate::Settings; // Assuming Settings is accessible
+use crate::{Settings, StaticTextures}; // Assuming Settings is accessible
 use std::sync::Arc;
 use tracing::info;
 use wgpu::util::DeviceExt;
@@ -15,6 +15,7 @@ pub struct SkyRenderer {
     depth_texture_bind_group_layout: wgpu::BindGroupLayout,
     depth_sampler: Arc<wgpu::Sampler>,
     pub depth_texture_bind_group: Option<wgpu::BindGroup>, // Option<> because view changes on resize
+    static_textures: Arc<StaticTextures>,
 }
 
 impl SkyRenderer {
@@ -24,6 +25,7 @@ impl SkyRenderer {
         camera_bind_group_layout: &wgpu::BindGroupLayout,
         shader_hot_reload: Arc<ShaderHotReload>,
         output_format: wgpu::TextureFormat, // The format of the texture we render to (Rgba32Float)
+        static_textures: Arc<StaticTextures>,
     ) -> Self {
         // Layout for binding the custom depth texture (R32Float) and a sampler
         let depth_texture_bind_group_layout =
@@ -87,6 +89,7 @@ impl SkyRenderer {
             depth_texture_bind_group_layout,
             depth_sampler,
             depth_texture_bind_group: None, // Will be created on first resize/draw
+            static_textures,
         }
     }
 
@@ -174,12 +177,7 @@ impl SkyRenderer {
     pub fn render<'rpass>(&'rpass self, rpass: &mut wgpu::RenderPass<'rpass>) {
         if let Some(depth_bind_group) = &self.depth_texture_bind_group {
             rpass.set_pipeline(&self.render_pipeline);
-            // Bind groups are set outside in WgpuCtx::draw based on the layout
-            // Group 0: Camera (Set in WgpuCtx)
-            // Group 1: Depth Texture
             rpass.set_bind_group(1, depth_bind_group, &[]);
-            // Group 2: Settings (Set in WgpuCtx)
-
             // Draw the fullscreen quad (4 vertices for triangle strip)
             rpass.draw(0..4, 0..1);
         } else {

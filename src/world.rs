@@ -261,7 +261,7 @@ pub fn update_world(world: &mut World, input: &mut Input, dt: Duration) {
         // transform.position.y +=
         //     (up_input as i8 - down_input as i8) as f32 * move_speed * dt_seconds;
 
-        transform.position.z += -5.0 * dt_seconds;
+        transform.position.z += -move_speed * dt_seconds;
 
         // Camera rotation using right stick
         let (raw_look_x, raw_look_y) = input.right_stick_vector(controller_idx);
