@@ -20,13 +20,6 @@ use imgui_winit_support::WinitPlatform;
 
 use tracing::{debug, error, info, trace, warn};
 
-/// Enum for selecting the active rendering mode
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum RenderMode {
-    Voxel,
-    Atmosphere,
-}
-
 // --- ShaderHotReload implementation ---
 pub struct ShaderHotReload {
     device: Arc<wgpu::Device>,
