@@ -96,7 +96,7 @@ impl<'window> ApplicationHandler for App<'window> {
                     (self.wgpu_ctx.as_mut(), self.window.as_ref())
                 {
                     if !window.is_minimized().unwrap_or_default() {
-                        wgpu_ctx.resize((new_size.width, new_size.height));
+                        wgpu_ctx.resize((new_size.width / 2, new_size.height / 2));
 
                         // Update camera aspect ratio
                         if let Some(camera_entity) = self.camera_entity {

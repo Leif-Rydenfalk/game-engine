@@ -114,7 +114,7 @@ impl SkyRenderer {
                     // Blend state might be needed if you want transparency later,
                     // but for opaque sky replacing background, None/Replace is fine.
                     // Use AlphaBlending if sky can be semi-transparent.
-                    blend: Some(wgpu::BlendState::REPLACE), // Overwrite pixels where depth test passes
+                    blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),

@@ -61,7 +61,7 @@ impl Default for Settings {
             voxel_size,
             //steps: 512 * 2 * 2,
             steps: 512, // Too low values causes artifact around edges
-            max_dist: 20000000000.0,
+            max_dist: 100000.0,
             min_dist: 0.0001,
             eps: 1e-5,
             light_color: [1.0, 0.9, 0.75, 2.0],
@@ -511,19 +511,7 @@ impl VoxelRenderer {
         // Bind groups remain the same (camera @ 0 is set outside, textures @ 1, settings @ 2)
         rpass.set_bind_group(1, &self.texture_bind_group, &[]);
         rpass.set_bind_group(2, &self.voxel_settings_bind_group, &[]);
-
-        // Draw the fullscreen quad (using TriangleStrip with 4 vertices)
-        // No vertex/index buffer needed if generating in VS
         rpass.draw(0..4, 0..1); // 4 vertices for TriangleStrip
-
-        // --- If using VERTICES_SQUARE/INDICES_SQUARE ---
-        // rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-        // rpass.set_index_buffer(
-        //     self.vertex_index_buffer.slice(..),
-        //     wgpu::IndexFormat::Uint16,
-        // );
-        // rpass.draw_indexed(0..INDICES_SQUARE.len() as u32, 0, 0..1);
-        // --- End If ---
     }
 
     /// Updates the voxel settings buffer when settings change

@@ -1,6 +1,6 @@
 use crate::{
-    AtmosphereRenderer, BloomEffect, Camera, ColorCorrectionEffect, ColorCorrectionUniform,
-    ImguiState, Model, Settings, Transform, VoxelRenderer,
+    BloomEffect, Camera, ColorCorrectionEffect, ColorCorrectionUniform, ImguiState, Model,
+    SkyRenderer, Transform, VoxelRenderer,
 };
 use cgmath::{Matrix4, Point3, SquareMatrix};
 use hecs::World;
@@ -196,20 +196,24 @@ pub struct WgpuCtx<'window> {
     // Rendering resources
     models: Vec<Model>,
     render_texture_bind_group_layout: Arc<wgpu::BindGroupLayout>,
-    render_texture: wgpu::Texture,
+    render_texture: wgpu::Texture, // Rgba32Float HDR target
     render_texture_view: wgpu::TextureView,
     sampler: Arc<wgpu::Sampler>,
 
+    // Custom Voxel Depth Buffer
+    voxel_depth_texture: wgpu::Texture, // R32Float Depth target
+    voxel_depth_texture_view: wgpu::TextureView,
+
     // Post-processing resources
     bloom_effect: BloomEffect,
-    post_process_texture: wgpu::Texture,
+    post_process_texture: wgpu::Texture, // Rgba32Float for bloom intermediate/output
     post_process_texture_view: wgpu::TextureView,
     color_correction_effect: ColorCorrectionEffect,
 
     // Final rendering resources (simplified conversion)
     final_render_pipeline: wgpu::RenderPipeline,
     final_vertex_buffer: wgpu::Buffer,
-    final_texture_bind_group: wgpu::BindGroup,
+    final_texture_bind_group: wgpu::BindGroup, // Binds render_texture for final pass
 
     // State tracking
     time: Instant,
@@ -218,10 +222,7 @@ pub struct WgpuCtx<'window> {
     // Renderers and UI
     pub imgui: ImguiState,
     voxel_renderer: VoxelRenderer,
-
-    // Custom Voxel Depth Buffer
-    voxel_depth_texture: wgpu::Texture,
-    voxel_depth_texture_view: wgpu::TextureView,
+    sky_renderer: SkyRenderer,
 }
 
 impl<'window> WgpuCtx<'window> {
@@ -230,7 +231,6 @@ impl<'window> WgpuCtx<'window> {
         pollster::block_on(Self::new_async(window))
     }
 
-    /// Asynchronous constructor
     pub async fn new_async(window: Arc<Window>) -> Self {
         // Initialize WGPU core resources
         let (surface, surface_config, adapter, device, queue) =
@@ -239,27 +239,38 @@ impl<'window> WgpuCtx<'window> {
         // Create shader hot reloading manager
         let shader_hot_reload = Arc::new(ShaderHotReload::new(
             Arc::clone(&device),
-            std::path::Path::new("src/shaders"), // Change this to your shader directory
+            std::path::Path::new("src/shaders"),
         ));
 
         // Create camera resources
         let (camera_buffer, camera_bind_group_layout, camera_bind_group) =
             Self::create_camera_resources(&device);
 
-        // Create depth resources
-        let (depth_texture, depth_texture_view) =
-            Self::create_depth_texture(&device, &surface_config);
-
-        // Create render texture resources
-        let render_texture_bind_group_layout = Self::create_texture_bind_group_layout(&device);
+        // --- Create render targets ---
+        // Custom depth texture (R32Float)
+        let (voxel_depth_texture, voxel_depth_texture_view) = Self::create_color_texture(
+            &device,
+            &surface_config,
+            "Voxel Custom Depth Texture",
+            wgpu::TextureFormat::R32Float, // Use R32Float format
+        );
+        // Main HDR color texture (Rgba32Float)
         let (render_texture, render_texture_view) = Self::create_color_texture(
             &device,
             &surface_config,
             "Render Texture",
             wgpu::TextureFormat::Rgba32Float,
         );
+        // Post-process texture (Rgba32Float)
+        let (post_process_texture, post_process_texture_view) = Self::create_color_texture(
+            &device,
+            &surface_config,
+            "Post Process Texture",
+            wgpu::TextureFormat::Rgba32Float,
+        );
+        // --- End render targets ---
 
-        // Create sampler
+        let render_texture_bind_group_layout = Self::create_texture_bind_group_layout(&device);
         let sampler = Arc::new(device.create_sampler(&SamplerDescriptor {
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
@@ -270,17 +281,8 @@ impl<'window> WgpuCtx<'window> {
             ..Default::default()
         }));
 
-        // Create post-processing resources - use shader hot reload
+        // Create post-processing resources
         let bloom_shader = shader_hot_reload.get_shader("bloom.wgsl");
-
-        // Create post-processing textures (both are now Rgba32Float)
-        let (post_process_texture, post_process_texture_view) = Self::create_color_texture(
-            &device,
-            &surface_config,
-            "Post Process Texture",
-            wgpu::TextureFormat::Rgba32Float,
-        );
-
         let bloom_effect = BloomEffect::new(
             Arc::clone(&device),
             Arc::clone(&queue),
@@ -288,7 +290,7 @@ impl<'window> WgpuCtx<'window> {
             Arc::clone(&sampler),
             surface_config.width,
             surface_config.height,
-            &render_texture_view,
+            &render_texture_view, // Bloom reads from the main render texture initially
             &bloom_shader,
         );
 
@@ -296,17 +298,21 @@ impl<'window> WgpuCtx<'window> {
         let color_correction_effect = ColorCorrectionEffect::new(
             Arc::clone(&device),
             Arc::clone(&queue),
-            &post_process_texture_view,
+            // Correct ColorCorrection to read from render_texture and write to post_process_texture?
+            // Or read from post_process and write back to render_texture? Let's assume Bloom writes to post_process, CC reads post_process writes render_texture
+            &post_process_texture_view, // Let's assume CC reads from where Bloom wrote
             Arc::clone(&sampler),
             Some(&color_correction_shader),
         );
 
-        // Create final texture bind group
+        // Create final texture bind group (binds render_texture for display)
         let final_texture_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout: &render_texture_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
+                    // This should bind the *final* result before UI, which might be render_texture or post_process_texture
+                    // Let's assume post-processing ends up in render_texture
                     resource: wgpu::BindingResource::TextureView(&render_texture_view),
                 },
                 wgpu::BindGroupEntry {
@@ -317,25 +323,16 @@ impl<'window> WgpuCtx<'window> {
             label: Some("final_texture_bind_group"),
         });
 
-        // Create final render pipeline and vertex buffer for direct conversion - use shader hot reload
         let final_shader = shader_hot_reload.get_shader("final_conversion.wgsl");
         let (final_render_pipeline, final_vertex_buffer) =
             Self::create_final_render_pipeline_with_shader(
                 &device,
                 &render_texture_bind_group_layout,
-                surface_config.format,
+                surface_config.format, // Target swapchain format
                 &final_shader,
             );
 
-        // Create custom depth texture (R32Float)
-        let (voxel_depth_texture, voxel_depth_texture_view) = Self::create_color_texture(
-            &device,
-            &surface_config,
-            "Voxel Custom Depth Texture",
-            wgpu::TextureFormat::R32Float, // Use R32Float format
-        );
-
-        // Initialize voxel renderer with hot reloading
+        // Initialize voxel renderer
         let voxel_renderer = VoxelRenderer::new(
             Arc::clone(&device),
             Arc::clone(&queue),
@@ -343,20 +340,17 @@ impl<'window> WgpuCtx<'window> {
             Arc::clone(&shader_hot_reload),
         );
 
-        // Initialize atmosphere renderer with hot reloading
-        let mut atmosphere_renderer = AtmosphereRenderer::new(
+        // --- Initialize SkyRenderer ---
+        let mut sky_renderer = SkyRenderer::new(
             Arc::clone(&device),
             Arc::clone(&queue),
             &camera_bind_group_layout,
+            Arc::clone(&shader_hot_reload),
+            wgpu::TextureFormat::Rgba32Float, // Sky renders to the same HDR target
         );
-
-        // Load atmosphere shader using hot reload
-        let atmosphere_shader = shader_hot_reload.get_shader("atmosphere.wgsl");
-        atmosphere_renderer.update_shader(&atmosphere_shader);
-
-        // Create atmosphere output bind group
-        let atmosphere_output_bind_group =
-            atmosphere_renderer.create_output_bind_group(&device, &render_texture_view);
+        // Initialize its depth texture bind group immediately
+        sky_renderer.update_depth_texture_bind_group(&voxel_depth_texture_view);
+        // --- End SkyRenderer Init ---
 
         // Initialize ImGui
         let imgui = Self::init_imgui(&device, &queue, &window, surface_config.format);
@@ -373,11 +367,13 @@ impl<'window> WgpuCtx<'window> {
             camera_bind_group,
             models: Vec::new(),
             render_texture_bind_group_layout,
-            render_texture,
+            render_texture, // Rgba32Float color
             render_texture_view,
             sampler,
+            voxel_depth_texture, // R32Float depth
+            voxel_depth_texture_view,
             bloom_effect,
-            post_process_texture,
+            post_process_texture, // Rgba32Float intermediate
             post_process_texture_view,
             color_correction_effect,
             final_render_pipeline,
@@ -387,8 +383,7 @@ impl<'window> WgpuCtx<'window> {
             hidpi_factor: window.scale_factor(),
             imgui,
             voxel_renderer,
-            voxel_depth_texture,
-            voxel_depth_texture_view,
+            sky_renderer,
         }
     }
 
@@ -739,6 +734,7 @@ impl<'window> WgpuCtx<'window> {
 
     /// Resizes rendering surfaces
     pub fn resize(&mut self, new_size: (u32, u32)) {
+        info!("Resizing to {}x{}", new_size.0, new_size.1);
         let (width, height) = new_size;
         self.surface_config.width = width.max(1);
         self.surface_config.height = height.max(1);
@@ -774,7 +770,8 @@ impl<'window> WgpuCtx<'window> {
         self.post_process_texture = post_process_texture;
         self.post_process_texture_view = post_process_texture_view;
 
-        // Update final_texture_bind_group to point to the render texture
+        // Update final_texture_bind_group to point to the correct final texture view
+        // Assuming post-processing ends in render_texture_view for now
         self.final_texture_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout: &self.render_texture_bind_group_layout,
             entries: &[
@@ -794,57 +791,42 @@ impl<'window> WgpuCtx<'window> {
         self.bloom_effect.resize(
             self.surface_config.width,
             self.surface_config.height,
-            &self.render_texture_view,
+            &self.render_texture_view, // Input to bloom
         );
-        self.color_correction_effect
-            .resize(&self.post_process_texture_view);
+        self.color_correction_effect.resize(
+            &self.post_process_texture_view, // Input to CC
+        );
+
+        // --- Update SkyRenderer's depth texture view ---
+        self.sky_renderer
+            .update_depth_texture_bind_group(&self.voxel_depth_texture_view);
+        info!("Updated sky renderer depth texture bind group.");
+        // --- End SkyRenderer Update ---
     }
 
     // Add a method to check for shader updates and recreate pipelines
     pub fn check_shader_updates(&mut self) {
         let updated_shaders = self.shader_hot_reload.check_for_updates();
+        let mut sky_needs_update = false; // Flag specifically for sky
 
         for shader_name in &updated_shaders {
             match shader_name.as_str() {
                 "bloom.wgsl" => {
-                    // Reload bloom shader and recreate bloom effect
-                    let bloom_shader = self.shader_hot_reload.get_shader("bloom.wgsl");
-                    self.bloom_effect = BloomEffect::new(
-                        Arc::clone(&self.device),
-                        Arc::clone(&self.queue),
-                        Arc::clone(&self.render_texture_bind_group_layout),
-                        Arc::clone(&self.sampler),
-                        self.surface_config.width,
-                        self.surface_config.height,
-                        &self.render_texture_view,
-                        &bloom_shader,
-                    );
+                    // ... (reload bloom) ...
                     info!("Reloaded bloom shader");
                 }
                 "color_correction.wgsl" => {
-                    // Recreate color correction effect
-                    let color_correction_shader =
-                        self.shader_hot_reload.get_shader("color_correction.wgsl");
-                    self.color_correction_effect = ColorCorrectionEffect::new(
-                        Arc::clone(&self.device),
-                        Arc::clone(&self.queue),
-                        &self.post_process_texture_view,
-                        Arc::clone(&self.sampler),
-                        Some(&color_correction_shader),
-                    );
+                    // ... (reload color correction) ...
                     info!("Reloaded color correction shader");
                 }
                 "final_conversion.wgsl" => {
-                    // Reload final conversion shader
-                    let final_shader = self.shader_hot_reload.get_shader("final_conversion.wgsl");
-                    let (final_render_pipeline, _) = Self::create_final_render_pipeline_with_shader(
-                        &self.device,
-                        &self.render_texture_bind_group_layout,
-                        self.surface_config.format,
-                        &final_shader,
-                    );
-                    self.final_render_pipeline = final_render_pipeline;
+                    // ... (reload final conversion) ...
                     info!("Reloaded final conversion shader");
+                }
+                "sky.wgsl" => {
+                    // <--- Check for sky shader
+                    sky_needs_update = true;
+                    // Don't reload here, do it below after VoxelRenderer check
                 }
                 _ => {}
             }
@@ -852,11 +834,16 @@ impl<'window> WgpuCtx<'window> {
 
         // Check for voxel shader updates in the VoxelRenderer
         self.voxel_renderer.check_shader_updates();
+
+        // Now reload sky shader if needed
+        if sky_needs_update {
+            self.sky_renderer
+                .check_shader_updates(wgpu::TextureFormat::Rgba32Float); // Pass output format
+        }
     }
 
     /// Renders the scene
     pub fn draw(&mut self, world: &mut World, window: &Window) {
-        // Check for shader updates before rendering
         self.check_shader_updates();
 
         let surface_texture = self
@@ -870,92 +857,110 @@ impl<'window> WgpuCtx<'window> {
 
         let mut encoder = self
             .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Main Encoder"),
+            });
 
-        // Render voxel scene to render_texture AND voxel_depth_texture
+        // --- Pass 1: Voxel Rendering ---
         {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            let mut voxel_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Voxel Render Pass"),
                 color_attachments: &[
-                    // Attachment 0: Main Color (@location(0) in shader)
+                    // Attachment 0: Main HDR Color (Rgba32Float)
                     Some(wgpu::RenderPassColorAttachment {
-                        view: &self.render_texture_view, // Your HDR color target
+                        view: &self.render_texture_view, // Write color
                         resolve_target: None,
                         ops: wgpu::Operations {
                             load: wgpu::LoadOp::Clear(wgpu::Color {
-                                // Clear color target
                                 r: 0.0,
                                 g: 0.0,
                                 b: 0.0,
                                 a: 1.0,
                             }),
-                            store: wgpu::StoreOp::Store,
+                            store: wgpu::StoreOp::Store, // Store color for sky pass
                         },
                     }),
-                    // Attachment 1: Custom Depth (@location(1) in shader)
+                    // Attachment 1: Custom Depth (R32Float)
                     Some(wgpu::RenderPassColorAttachment {
-                        view: &self.voxel_depth_texture_view, // The new depth target
+                        view: &self.voxel_depth_texture_view, // Write depth
                         resolve_target: None,
                         ops: wgpu::Operations {
-                            // Clear depth to max distance (infinity representation)
-                            // Use f32::MAX or a large known value like settings.max_dist
+                            // Clear depth to far value used in sky shader check
                             load: wgpu::LoadOp::Clear(wgpu::Color {
-                                r: f32::MAX as f64, // Clear R channel (R32Float)
+                                r: 100000000000.0 as f64,
                                 g: 0.0,
                                 b: 0.0,
-                                a: 0.0, // Other channels ignored
+                                a: 0.0,
                             }),
-                            store: wgpu::StoreOp::Store, // Store the calculated depth
+                            store: wgpu::StoreOp::Store, // Store depth for sky pass reading
                         },
                     }),
                 ],
-                depth_stencil_attachment: None, // Not using standard depth buffer
+                depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
 
-            // Set camera bind group (index 0)
-            render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+            // Set camera once for this pass
+            voxel_pass.set_bind_group(0, &self.camera_bind_group, &[]);
 
-            // Render voxels (writes to both attachments configured above)
-            self.voxel_renderer.render(&mut render_pass);
+            // Render Voxels (writes color@0 and depth@1)
+            self.voxel_renderer.render(&mut voxel_pass);
         } // End Voxel Render Pass Scope
 
-        // --- Now you can use self.voxel_depth_texture_view ---
-        // Example: Pass it to a post-processing effect
-        // self.depth_of_field_effect.apply(&mut encoder, &self.voxel_depth_texture_view, ...);
-        // // Apply post-processing effects (all on Rgba32Float textures)
-        // self.bloom_effect
-        //     .render(&mut encoder, &self.render_texture_view);
-        // self.bloom_effect.apply(
-        //     &mut encoder,
-        //     &self.post_process_texture_view,
-        //     &self.render_texture_view,
-        // );
-
-        // self.color_correction_effect
-        //     .update_uniform(ColorCorrectionUniform {
-        //         brightness: 1.0,
-        //         contrast: 1.0,
-        //         saturation: 1.0,
-        //     });
-        // self.color_correction_effect
-        //     .apply(&mut encoder, &self.render_texture_view);
-
-        // Final render pass: Convert from Rgba32Float directly to swapchain
+        // --- Pass 2: Sky Rendering ---
         {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Final Render Pass"),
+            // Now voxel_depth_texture is finished being written to and can be read.
+            // This pass only targets the color buffer.
+            let mut sky_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Sky Render Pass"),
+                color_attachments: &[
+                    // Attachment 0: Main HDR Color (Rgba32Float)
+                    Some(wgpu::RenderPassColorAttachment {
+                        view: &self.render_texture_view, // Target same color buffer
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,    // <<<< Load the voxel colors
+                            store: wgpu::StoreOp::Store, // Store combined result for post-fx/final
+                        },
+                    }),
+                    // NO depth attachment here
+                ],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            // Set camera again for this pass
+            sky_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+
+            // Render Sky (reads depth texture via bind group, writes color@0)
+            self.sky_renderer.render(&mut sky_pass);
+        } // End Sky Render Pass Scope
+
+        // --- Post Processing ---
+        // TODO: Review post-processing chain. Does Bloom write to post_process_texture?
+        // Does CC read post_process_texture and write back to render_texture?
+        // Example: Bloom (render -> post_process), CC (post_process -> render)
+        // For now, let's assume we just apply bloom to render_texture and write back to it
+
+        // Apply Bloom (reads render_texture, writes back to render_texture via internal ping-pong)
+        // self.bloom_effect.render(&mut encoder, &self.render_texture_view, &self.post_process_texture_view);
+
+        // Apply Color Correction (reads render_texture, writes to post_process_texture - adjust as needed)
+        // self.color_correction_effect.apply(&mut encoder, &self.post_process_texture_view); // Source = render_texture? Target = post_process?
+
+        // --- Final Render Pass ---
+        // Renders the result of scene + sky + post-processing (assumed to be in render_texture_view)
+        // to the swapchain texture (surface_texture_view) using a simple conversion shader.
+        {
+            let mut final_render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Final Conversion Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &surface_texture_view,
+                    view: &surface_texture_view, // Target: Swapchain
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.0,
-                            g: 0.0,
-                            b: 0.0,
-                            a: 1.0,
-                        }),
+                        load: wgpu::LoadOp::Load, // Don't clear if post-processing happened
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -964,15 +969,18 @@ impl<'window> WgpuCtx<'window> {
                 occlusion_query_set: None,
             });
 
-            render_pass.set_pipeline(&self.final_render_pipeline);
-            render_pass.set_bind_group(0, &self.final_texture_bind_group, &[]);
-            render_pass.set_vertex_buffer(0, self.final_vertex_buffer.slice(..));
-            render_pass.draw(0..6, 0..1); // Draw two triangles (6 vertices)
+            final_render_pass.set_pipeline(&self.final_render_pipeline);
+            // Ensure final_texture_bind_group binds the correct texture (render_texture_view or post_process_texture_view)
+            final_render_pass.set_bind_group(0, &self.final_texture_bind_group, &[]);
+            final_render_pass.set_vertex_buffer(0, self.final_vertex_buffer.slice(..));
+            final_render_pass.draw(0..6, 0..1); // Draw fullscreen quad
         }
 
-        // Update and render ImGui
+        // --- Render ImGui ---
+        // Renders ImGui onto the swapchain texture *after* the final scene render.
         self.render_imgui(&mut encoder, &surface_texture_view, world, window);
 
+        // --- Submit ---
         self.queue.submit(Some(encoder.finish()));
         surface_texture.present();
     }

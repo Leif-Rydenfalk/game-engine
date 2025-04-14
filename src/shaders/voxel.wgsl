@@ -261,30 +261,30 @@ fn ACESFilm(x: vec3<f32>) -> vec3<f32> {
     return clamp((x * (a * x + vec3<f32>(b))) / (x * (c * x + vec3<f32>(d)) + vec3<f32>(e)), vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
-struct VertexInput {
-    @location(0) position: vec3f,
-    @location(1) tex_uv: vec2f,
-    @location(2) normal: vec3f,
-};
-
 struct VertexOutput {
     @builtin(position) position: vec4f,
-    @location(0) tex_uv: vec2f,
+    @location(0) world_pos: vec3f, // Pass world position for view direction calc
+    @location(1) ndc: vec4f, // Pass world position for view direction calc
 };
 
 @vertex
 fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
+    // Generate a fullscreen triangle strip
     let positions = array<vec2f, 4>(
         vec2f(-1.0, -1.0), vec2f(1.0, -1.0),
         vec2f(-1.0, 1.0), vec2f(1.0, 1.0)
     );
-    let tex_coords = array<vec2f, 4>(
-        vec2f(0.0, 0.0), vec2f(1.0, 0.0),
-        vec2f(0.0, 1.0), vec2f(1.0, 1.0)
-    );
+    let pos = positions[vertex_index];
+
+    // Calculate world position for view direction in fragment shader
+    let ndc = vec4f(pos.x, -pos.y, 1.0, 1.0); // Use Z=1 for far plane
+    let world = camera.inv_view_proj * ndc;
+    let world_xyz = world.xyz / world.w;
+
     var output: VertexOutput;
-    output.position = vec4f(positions[vertex_index], 0.0, 1.0);
-    output.tex_uv = tex_coords[vertex_index];
+    output.position = vec4f(pos, 0.0, 1.0); // Project to near plane for rasterizer
+    output.world_pos = world_xyz;
+    output.ndc = ndc;
     return output;
 }
 
@@ -296,8 +296,7 @@ struct FragmentOutput {
 @fragment
 fn fs_main(input: VertexOutput) -> FragmentOutput {
     let ro = camera.camera_position;
-    var ndc = vec4f(input.tex_uv * 2.0 - 1.0, 1.0, 1.0);
-    ndc.y *= -1.0; // Flip Y for UV coords
+    var ndc = input.ndc;
     let world_pos = camera.inv_view_proj * ndc;
     let rd = normalize(world_pos.xyz / world_pos.w - ro);
     let sun_dir = normalize(settings.light_direction.xyz);
@@ -305,11 +304,11 @@ fn fs_main(input: VertexOutput) -> FragmentOutput {
     // --- Prepare output struct ---
     var output: FragmentOutput;
     output.color = vec4f(0.0, 0.0, 0.0, 1.0); // Default color
-    output.depth = settings.max_dist; // Default depth (far distance) if its this we know its probably sky
+    output.depth = 10000000000.0; // Default depth (far distance) if its this we know its probably sky
 
     let hit = trace(ro, rd, settings.max_dist, settings.voxel_size);
     var col = vec3f(0.0); // Initialize color calculation variable
-    var t = hit.t;       // Use local 't' for clarity
+    var t = 10000000000.0;       // Use local 't' for clarity
 
     if hit.is_hit {
         let pos = ro + rd * hit.t;
