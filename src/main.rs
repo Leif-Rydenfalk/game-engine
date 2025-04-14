@@ -11,8 +11,11 @@ use winit::event_loop::{ControlFlow, EventLoop};
 mod audio_converter;
 pub use audio_converter::*;
 
-mod sound_manager;
-pub use sound_manager::*;
+mod sound;
+pub use sound::*;
+
+mod force_feedback;
+pub use force_feedback::*;
 
 mod app;
 pub use app::*;

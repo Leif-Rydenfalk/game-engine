@@ -1,9 +1,12 @@
 use gilrs::{Axis, Button, Event, EventType, GamepadId, Gilrs, GilrsBuilder};
+use hecs::World;
 use std::collections::HashMap;
 use tracing::{debug, error, info, trace, warn};
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta};
 use winit::keyboard::KeyCode;
+
+use crate::{sound, SoundManager, SoundManagerComponent};
 
 pub struct Input {
     keys_current: HashMap<KeyCode, ElementState>,
@@ -78,7 +81,7 @@ impl Input {
         self.scroll_delta += delta;
     }
 
-    pub fn update(&mut self) {
+    pub fn update(&mut self, world: &mut World) {
         // Save previous states
         self.keys_previous = self.keys_current.clone();
         self.mouse_buttons_previous = self.mouse_buttons_current.clone();
@@ -119,7 +122,22 @@ impl Input {
                             self.controller_buttons_current
                                 .insert((controller_index, button), value > TRIGGER_THRESHOLD);
                         }
+
+                        // for (_, sound_manager_component) in
+                        //     world.query_mut::<&mut SoundManagerComponent>()
+                        // {
+                        //     let sound_manager = sound_manager_component.inner.lock().unwrap();
+                        //     sound_manager.play("click 2").unwrap();
+                        // }
                     }
+                    // EventType::AxisChanged(axis, value, code) => {
+                    //     for (_, sound_manager_component) in
+                    //         world.query_mut::<&mut SoundManagerComponent>()
+                    //     {
+                    //         let sound_manager = sound_manager_component.inner.lock().unwrap();
+                    //         sound_manager.play("click 2").unwrap();
+                    //     }
+                    // }
                     EventType::Connected => {
                         let gp = gilrs.gamepad(id);
                         let name = gp.name();

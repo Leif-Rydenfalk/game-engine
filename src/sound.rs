@@ -286,7 +286,7 @@ impl SoundManager {
                     .unwrap()
                     .insert(instance_id.clone(), (sink.clone(), Instant::now()));
 
-                tracing::info!(
+                tracing::trace!(
                     "Playing sound: {} (instance: {}, delay: {}ms, pitch: {}, volume: {})",
                     sound_id,
                     instance_id,

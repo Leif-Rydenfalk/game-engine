@@ -1,16 +1,18 @@
 use crate::*;
+use cgmath::EuclideanSpace;
 use cgmath::One;
 use cgmath::Point3;
 use cgmath::Rotation3;
 use cgmath::{perspective, InnerSpace, Matrix4, Quaternion, Rad, Vector3, Zero};
-use gilrs::Axis;
 use gilrs::GamepadId;
+use gilrs::{Axis, Button, EventType, Gilrs};
 use hecs::Entity;
 use hecs::World;
 use std::f32::consts::PI;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
+use std::time::Instant;
 use tracing::info;
 use tracing::warn;
 
@@ -90,7 +92,7 @@ pub fn setup_camera_entity(world: &mut World, window_size: Option<(u32, u32)>) -
 
     world.spawn((
         Transform {
-            position: Point3::new(0.0, 7.0, 0.0),
+            position: Point3::new(0.0, 20.0, 0.0),
             ..Default::default()
         },
         Camera {
@@ -99,6 +101,7 @@ pub fn setup_camera_entity(world: &mut World, window_size: Option<(u32, u32)>) -
         },
         FPSController::default(), // Add the FPS controller component
         TriggerHandler::new(Duration::from_millis(200)),
+        CameraShake::new(), // Add the camera shake component
     ))
 }
 
@@ -157,18 +160,18 @@ pub fn update_world(world: &mut World, input: &mut Input, dt: Duration) {
             if let Some(sound_manager) = &sound_manager_opt {
                 // // let random_number = fastrand::i32(1..=3);
                 // // let id = format!("exp {}", random_number);
-                // let id = format!("exp 1");
+                let id = format!("exp 1");
 
-                // // Try to play the firing sound
-                // // The sound file should be in assets/sounds_wav/fire.wav or similarly named
-                // if let Ok(sound_mgr) = sound_manager.lock() {
-                //     if sound_mgr.has_sound(&id) {
-                //         let _ = sound_mgr.play(&id);
-                //     } else {
-                //         // If none of the expected sounds exist, log a warning
-                //         warn!("No firing sound found in sound manager");
-                //     }
-                // }
+                // Try to play the firing sound
+                // The sound file should be in assets/sounds_wav/fire.wav or similarly named
+                if let Ok(sound_mgr) = sound_manager.lock() {
+                    if sound_mgr.has_sound(&id) {
+                        let _ = sound_mgr.play(&id);
+                    } else {
+                        // If none of the expected sounds exist, log a warning
+                        warn!("No firing sound found in sound manager");
+                    }
+                }
 
                 bullets_to_spawn.push(Bullet {
                     fired_at: Instant::now(),
@@ -191,8 +194,6 @@ pub fn update_world(world: &mut World, input: &mut Input, dt: Duration) {
     }
 
     for bullet_to_spawn in bullets_to_spawn {
-        play_explosion_effect(&world);
-
         world.spawn((bullet_to_spawn,));
     }
 
@@ -209,20 +210,8 @@ pub fn update_world(world: &mut World, input: &mut Input, dt: Duration) {
 
     // Play explosion sound and remove bullets
     if !bullets_to_remove.is_empty() && sound_manager_opt.is_some() {
-        // let sound_manager = sound_manager_opt.unwrap();
-
-        // // Try to play explosion sound for each removed bullet
-        // if let Ok(sound_mgr) = sound_manager.lock() {
-        //     let id = format!("exp 2"); // Using a different explosion sound
-
-        //     if sound_mgr.has_sound(&id) {
-        //         for _ in &bullets_to_remove {
-        //             let _ = sound_mgr.play(&id);
-        //         }
-        //     } else {
-        //         warn!("No explosion sound found in sound manager");
-        //     }
-        // }
+        // Play sound effect
+        play_explosion_effect(world);
 
         // Remove the bullets
         for entity in bullets_to_remove {
@@ -240,37 +229,39 @@ pub fn update_world(world: &mut World, input: &mut Input, dt: Duration) {
     for (_, (transform, _, fps_controller)) in
         world.query_mut::<(&mut Transform, &Camera, &mut FPSController)>()
     {
-        // Movement using left stick
-        let (raw_move_x, raw_move_z) = input.left_stick_vector(controller_idx);
+        // // Movement using left stick
+        // let (raw_move_x, raw_move_z) = input.left_stick_vector(controller_idx);
 
-        // Calculate the magnitude of the move vector
-        let move_magnitude = (raw_move_x * raw_move_x + raw_move_z * raw_move_z).sqrt();
+        // // Calculate the magnitude of the move vector
+        // let move_magnitude = (raw_move_x * raw_move_x + raw_move_z * raw_move_z).sqrt();
 
-        if move_magnitude > 0.0 {
-            // Apply exponential response curve to the magnitude
-            let scaled_magnitude = move_magnitude.powf(2.5);
+        // if move_magnitude > 0.0 {
+        //     // Apply exponential response curve to the magnitude
+        //     let scaled_magnitude = move_magnitude.powf(2.5);
 
-            // Scale the original direction by the new magnitude
-            let scale_factor = scaled_magnitude / move_magnitude;
-            let move_x = raw_move_x * scale_factor;
-            let move_z = raw_move_z * scale_factor;
+        //     // Scale the original direction by the new magnitude
+        //     let scale_factor = scaled_magnitude / move_magnitude;
+        //     let move_x = raw_move_x * scale_factor;
+        //     let move_z = raw_move_z * scale_factor;
 
-            // Calculate forward and right vectors based on yaw only (for FPS-style movement)
-            // This ensures movement is always in the XZ plane regardless of pitch
-            let yaw_quat = Quaternion::from_axis_angle(Vector3::unit_y(), Rad(fps_controller.yaw));
-            let forward = yaw_quat * -Vector3::unit_z(); // Forward vector in XZ plane
-            let right = yaw_quat * Vector3::unit_x(); // Right vector in XZ plane
+        //     // Calculate forward and right vectors based on yaw only (for FPS-style movement)
+        //     // This ensures movement is always in the XZ plane regardless of pitch
+        //     let yaw_quat = Quaternion::from_axis_angle(Vector3::unit_y(), Rad(fps_controller.yaw));
+        //     let forward = yaw_quat * -Vector3::unit_z(); // Forward vector in XZ plane
+        //     let right = yaw_quat * Vector3::unit_x(); // Right vector in XZ plane
 
-            // Apply movement based on stick input
-            transform.position += forward * move_z * move_speed * dt_seconds;
-            transform.position += right * move_x * move_speed * dt_seconds;
-        }
+        //     // Apply movement based on stick input
+        //     transform.position += forward * move_z * move_speed * dt_seconds;
+        //     transform.position += right * move_x * move_speed * dt_seconds;
+        // }
 
-        // Vertical movement using triggers
-        let up_input = input.is_controller_button_down(controller_idx, gilrs::Button::South);
-        let down_input = input.is_controller_button_down(controller_idx, gilrs::Button::West);
-        transform.position.y +=
-            (up_input as i8 - down_input as i8) as f32 * move_speed * dt_seconds;
+        // // Vertical movement using triggers
+        // let up_input = input.is_controller_button_down(controller_idx, gilrs::Button::South);
+        // let down_input = input.is_controller_button_down(controller_idx, gilrs::Button::West);
+        // transform.position.y +=
+        //     (up_input as i8 - down_input as i8) as f32 * move_speed * dt_seconds;
+
+        transform.position.z += -5.0 * dt_seconds;
 
         // Camera rotation using right stick
         let (raw_look_x, raw_look_y) = input.right_stick_vector(controller_idx);
@@ -314,7 +305,7 @@ pub fn update_world(world: &mut World, input: &mut Input, dt: Duration) {
 
 /// Plays a complex explosion sound by overlapping multiple explosion sounds
 /// with random timing and adds tail sounds at the same time as the last primary sound.
-pub fn play_complex_explosion_sound(sound_manager: Arc<Mutex<SoundManager>>) {
+pub fn play_explosion_sound(sound_manager: Arc<Mutex<SoundManager>>) {
     // Number of primary explosion sounds to play
     let primary_count = fastrand::i32(3..=5); // Play 3-5 explosion sounds
 
@@ -362,17 +353,8 @@ pub fn play_complex_explosion_sound(sound_manager: Arc<Mutex<SoundManager>>) {
                 warn!("Sound not found: {}", sound_id);
             }
 
-            // If this is the last or second-to-last primary explosion sound, add tail sounds
             if i == primary_count - 1 {
                 let tail_id = format!("exp tail {}", 1);
-
-                if sound_mgr.has_sound(&tail_id) {
-                    let _ = sound_mgr.play_with_settings(&tail_id, settings);
-                } else {
-                    warn!("Tail sound not found: {}", tail_id);
-                }
-            } else if i == primary_count - 2 {
-                let tail_id = format!("exp tail {}", 2);
 
                 if sound_mgr.has_sound(&tail_id) {
                     let _ = sound_mgr.play_with_settings(&tail_id, settings);
@@ -384,9 +366,105 @@ pub fn play_complex_explosion_sound(sound_manager: Arc<Mutex<SoundManager>>) {
     }
 }
 
-// Integration function to use with the existing world system
+// Simplified unified camera shake component
+#[derive(Debug, Default)]
+pub struct CameraShake {
+    pub effects: Vec<ShakeEffect>,
+}
+
+// Unified shake effect definition
+#[derive(Debug, Clone)]
+pub struct ShakeEffect {
+    pub start_time: Instant,
+    pub duration: Duration,
+    pub intensity: f32,
+}
+
+impl CameraShake {
+    pub fn new() -> Self {
+        Self {
+            effects: Vec::new(),
+        }
+    }
+
+    // Add a unified shake effect
+    pub fn add_effect(&mut self, duration: Duration, intensity: f32) {
+        let seed = fastrand::u32(..);
+        self.effects.push(ShakeEffect {
+            start_time: Instant::now(),
+            duration,
+            intensity,
+        });
+    }
+
+    // Update state by removing expired effects
+    pub fn update(&mut self) {
+        self.effects
+            .retain(|effect| effect.start_time.elapsed() < effect.duration);
+    }
+
+    // Get the current shake offsets
+    pub fn get_shake_offset(&self) -> (Vector3<f32>, Quaternion<f32>) {
+        if self.effects.is_empty() {
+            return (Vector3::zero(), Quaternion::one());
+        }
+
+        let mut position_offset = Vector3::zero();
+        let mut rotation_offset = Quaternion::one();
+
+        for effect in &self.effects {
+            let elapsed = effect.start_time.elapsed();
+
+            // Skip if expired
+            if elapsed >= effect.duration {
+                continue;
+            }
+        }
+
+        (position_offset, rotation_offset)
+    }
+
+    // Check if the camera has any active shake effects
+    pub fn has_active_effects(&self) -> bool {
+        !self.effects.is_empty()
+    }
+}
+
+// Updated view matrix calculation to apply the unified camera shake
+pub fn calculate_view_matrix(
+    world: &World,
+    entity: Entity,
+) -> Result<Matrix4<f32>, hecs::ComponentError> {
+    // Get required components
+    let transform = world.get::<&Transform>(entity)?;
+    let camera_shake = world.get::<&CameraShake>(entity).ok();
+
+    // Get base position and rotation
+    let position = transform.position;
+    let rotation = transform.rotation;
+
+    // Apply unified shake if available
+    let (position_offset, rotation_offset) = if let Some(shake) = camera_shake {
+        shake.get_shake_offset()
+    } else {
+        (Vector3::zero(), Quaternion::one())
+    };
+
+    // Apply shake offsets
+    let shake_position = Point3::from_vec(position.to_vec() + position_offset);
+    let shake_rotation = rotation_offset * rotation;
+
+    // Calculate forward vector with shaken rotation
+    let forward = shake_rotation * -Vector3::unit_z();
+    let up = Vector3::unit_y();
+    let target = shake_position + forward;
+
+    Ok(Matrix4::look_at_rh(shake_position, target, up))
+}
+
+// Modified explosion effect function to incorporate camera shake
 pub fn play_explosion_effect(world: &World) {
-    // Find the SoundManagerComponent to use for explosion sounds
+    // Find the SoundManagerComponent for explosion sounds
     let sound_manager_opt = world
         .query::<&SoundManagerComponent>()
         .iter()
@@ -394,22 +472,10 @@ pub fn play_explosion_effect(world: &World) {
         .map(|(_, comp)| comp.inner.clone());
 
     if let Some(sound_manager) = sound_manager_opt {
-        play_complex_explosion_sound(sound_manager);
+        play_explosion_sound(sound_manager);
     } else {
         warn!("No sound manager available for explosion effect");
     }
-}
-
-// Update the view matrix calculation to ensure it uses the world up vector
-pub fn calculate_view_matrix(transform: &Transform) -> Matrix4<f32> {
-    let position = transform.position;
-    let forward = transform.rotation * -Vector3::unit_z();
-
-    // Always use world up for the camera's up vector
-    let up = Vector3::unit_y();
-
-    let target = position + forward;
-    Matrix4::look_at_rh(position, target, up)
 }
 
 // pub fn calculate_view_matrix(transform: &Transform) -> Matrix4<f32> {
@@ -421,14 +487,26 @@ pub fn calculate_view_matrix(transform: &Transform) -> Matrix4<f32> {
 //     Matrix4::look_at_rh(position, target, up)
 // }
 
-pub fn calculate_view_projection(transform: &Transform, camera: &Camera) -> Matrix4<f32> {
-    let view = calculate_view_matrix(transform);
+// Updated to use the new calculate_view_matrix function
+pub fn calculate_view_projection(
+    world: &World,
+    entity: Entity,
+) -> Result<Matrix4<f32>, hecs::ComponentError> {
+    // Get camera component from the entity
+    let camera = world.get::<&Camera>(entity)?;
+
+    // Calculate view matrix using the entity and world
+    let view = calculate_view_matrix(world, entity)?;
+
+    // Calculate projection matrix from camera properties
     let proj = perspective(camera.fov, camera.aspect, camera.near, camera.far);
-    proj * view
+
+    Ok(proj * view)
 }
 
-pub fn calculate_view(transform: &Transform) -> Matrix4<f32> {
-    calculate_view_matrix(transform)
+// Updated calculate_view to use entity and world
+pub fn calculate_view(world: &World, entity: Entity) -> Result<Matrix4<f32>, hecs::ComponentError> {
+    calculate_view_matrix(world, entity)
 }
 
 #[derive(Debug)]
@@ -445,9 +523,6 @@ impl Default for Velocity {
         }
     }
 }
-
-use gilrs::{Button, EventType, Gilrs};
-use std::time::Instant;
 
 /// Handles the state and transitions for a trigger with force feedback effects
 pub struct TriggerHandler {

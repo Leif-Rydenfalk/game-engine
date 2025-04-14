@@ -225,6 +225,10 @@ pub struct WgpuCtx<'window> {
     voxel_renderer: VoxelRenderer,
     atmosphere_renderer: AtmosphereRenderer,
     atmosphere_output_bind_group: wgpu::BindGroup,
+
+    // Custom Voxel Depth Buffer
+    voxel_depth_texture: wgpu::Texture,
+    voxel_depth_texture_view: wgpu::TextureView,
 }
 
 impl<'window> WgpuCtx<'window> {
@@ -330,6 +334,14 @@ impl<'window> WgpuCtx<'window> {
                 &final_shader,
             );
 
+        // Create custom depth texture (R32Float)
+        let (voxel_depth_texture, voxel_depth_texture_view) = Self::create_color_texture(
+            &device,
+            &surface_config,
+            "Voxel Custom Depth Texture",
+            wgpu::TextureFormat::R32Float, // Use R32Float format
+        );
+
         // Initialize voxel renderer with hot reloading
         let voxel_renderer = VoxelRenderer::new(
             Arc::clone(&device),
@@ -387,6 +399,8 @@ impl<'window> WgpuCtx<'window> {
             voxel_renderer,
             atmosphere_renderer,
             atmosphere_output_bind_group,
+            voxel_depth_texture,
+            voxel_depth_texture_view,
         }
     }
 
@@ -748,6 +762,16 @@ impl<'window> WgpuCtx<'window> {
         self.depth_texture = depth_texture;
         self.depth_texture_view = depth_texture_view;
 
+        // Recreate custom depth texture (R32Float)
+        let (voxel_depth_texture, voxel_depth_texture_view) = Self::create_color_texture(
+            &self.device,
+            &self.surface_config,
+            "Voxel Custom Depth Texture",
+            wgpu::TextureFormat::R32Float,
+        );
+        self.voxel_depth_texture = voxel_depth_texture;
+        self.voxel_depth_texture_view = voxel_depth_texture_view;
+
         // Recreate render texture (Rgba32Float)
         let (render_texture, render_texture_view) = Self::create_color_texture(
             &self.device,
@@ -880,24 +904,44 @@ impl<'window> WgpuCtx<'window> {
         // Render scene based on the selected rendering mode
         match self.render_mode {
             RenderMode::Voxel => {
-                // Render voxel scene to render_texture
+                // Render voxel scene to render_texture AND voxel_depth_texture
                 {
                     let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("Voxel Render Pass"),
-                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view: &self.render_texture_view,
-                            resolve_target: None,
-                            ops: wgpu::Operations {
-                                load: wgpu::LoadOp::Clear(wgpu::Color {
-                                    r: 0.0,
-                                    g: 0.0,
-                                    b: 0.0,
-                                    a: 1.0,
-                                }),
-                                store: wgpu::StoreOp::Store,
-                            },
-                        })],
-                        depth_stencil_attachment: None,
+                        color_attachments: &[
+                            // Attachment 0: Main Color (@location(0) in shader)
+                            Some(wgpu::RenderPassColorAttachment {
+                                view: &self.render_texture_view, // Your HDR color target
+                                resolve_target: None,
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                                        // Clear color target
+                                        r: 0.0,
+                                        g: 0.0,
+                                        b: 0.0,
+                                        a: 1.0,
+                                    }),
+                                    store: wgpu::StoreOp::Store,
+                                },
+                            }),
+                            // Attachment 1: Custom Depth (@location(1) in shader)
+                            Some(wgpu::RenderPassColorAttachment {
+                                view: &self.voxel_depth_texture_view, // The new depth target
+                                resolve_target: None,
+                                ops: wgpu::Operations {
+                                    // Clear depth to max distance (infinity representation)
+                                    // Use f32::MAX or a large known value like settings.max_dist
+                                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                                        r: f32::MAX as f64, // Clear R channel (R32Float)
+                                        g: 0.0,
+                                        b: 0.0,
+                                        a: 0.0, // Other channels ignored
+                                    }),
+                                    store: wgpu::StoreOp::Store, // Store the calculated depth
+                                },
+                            }),
+                        ],
+                        depth_stencil_attachment: None, // Not using standard depth buffer
                         timestamp_writes: None,
                         occlusion_query_set: None,
                     });
@@ -905,9 +949,13 @@ impl<'window> WgpuCtx<'window> {
                     // Set camera bind group (index 0)
                     render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
 
-                    // Render voxels
+                    // Render voxels (writes to both attachments configured above)
                     self.voxel_renderer.render(&mut render_pass);
-                }
+                } // End Voxel Render Pass Scope
+
+                // --- Now you can use self.voxel_depth_texture_view ---
+                // Example: Pass it to a post-processing effect
+                // self.depth_of_field_effect.apply(&mut encoder, &self.voxel_depth_texture_view, ...);
             }
             RenderMode::Atmosphere => {
                 // Render atmosphere directly to render_texture using compute shader
@@ -1009,23 +1057,29 @@ impl<'window> WgpuCtx<'window> {
             .size([300.0, 400.0], Condition::FirstUseEver)
             .always_auto_resize(true)
             .build(|| {
-                // // Camera controls
-                // if ui.button("Set Camera Position Origin") {
-                //     for (_, (transform, _, _)) in world.query_mut::<(&mut Transform, &mut Camera, &mut CameraController)>() {
-                //         transform.position = Point3::new(6.0, 2.2, 6.0);
-                //     }
-                // }
+                // Camera controls
+                if ui.button("Set Camera Position Origin") {
+                    for (_, (transform, _)) in world.query_mut::<(&mut Transform, &mut Camera)>() {
+                        transform.position = Point3::new(6.0, 2.2, 6.0);
+                    }
+                }
 
-                // for (_, (transform, _, _)) in world.query_mut::<(&mut Transform, &mut Camera, &mut CameraController)>() {
-                //     let mut pos: [f32; 3] = transform.position.into();
-                //     if ui.input_float3("Camera Transform", &mut pos).build() {
-                //         transform.position = pos.into();
-                //     }
-                // }
+                for (_, (transform, _)) in world.query_mut::<(&mut Transform, &mut Camera)>() {
+                    let mut pos: [f32; 3] = transform.position.into();
+                    if ui.input_float3("Camera Transform", &mut pos).build() {
+                        transform.position = pos.into();
+                    }
+                }
 
-                // Render mode selection
                 ui.separator();
-                ui.text("Render Mode");
+                ui.text("Time Controls");
+                if ui.button("Reset Time") {
+                    self.time = Instant::now(); // This resets the time to the current moment
+                }
+
+                // // Render mode selection
+                // ui.separator();
+                // ui.text("Render Mode");
 
                 // let mut is_voxel = matches!(self.render_mode, RenderMode::Voxel);
                 // if ui.radio_button("Voxel", &mut is_voxel, is_voxel) && !is_voxel {
@@ -1056,6 +1110,15 @@ impl<'window> WgpuCtx<'window> {
                         if ui.checkbox("Show Ray Steps", &mut show_steps) {
                             self.voxel_renderer.voxel_settings.show_steps =
                                 if show_steps { 1 } else { 0 };
+                            self.voxel_renderer.update_settings_buffer();
+                        }
+
+                        if ui.slider(
+                            "Voxel Size",
+                            0.0,
+                            1.0,
+                            &mut self.voxel_renderer.voxel_settings.voxel_size,
+                        ) {
                             self.voxel_renderer.update_settings_buffer();
                         }
                     }
@@ -1105,14 +1168,7 @@ impl<'window> WgpuCtx<'window> {
                     );
                     self.final_render_pipeline = final_render_pipeline;
 
-                    // Force reload voxel shader
-                    let voxel_shader = self.shader_hot_reload.get_shader("voxel.wgsl");
-                    let render_pipeline = VoxelRenderer::create_pipeline(
-                        &self.device,
-                        &self.voxel_renderer.pipeline_layout,
-                        &voxel_shader,
-                    );
-                    self.voxel_renderer.render_pipeline = render_pipeline;
+                    self.voxel_renderer.reload_shader();
 
                     // Force reload atmosphere shader
                     let atmosphere_shader = self.shader_hot_reload.get_shader("atmosphere.wgsl");

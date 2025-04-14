@@ -95,16 +95,20 @@ impl<'window> ApplicationHandler for App<'window> {
                 if let (Some(wgpu_ctx), Some(window)) =
                     (self.wgpu_ctx.as_mut(), self.window.as_ref())
                 {
-                    wgpu_ctx.resize((new_size.width, new_size.height));
+                    if !window.is_minimized().unwrap_or_default() {
+                        wgpu_ctx.resize((new_size.width, new_size.height));
 
-                    // Update camera aspect ratio
-                    if let Some(camera_entity) = self.camera_entity {
-                        if let Ok(camera) = self.world.query_one_mut::<&mut Camera>(camera_entity) {
-                            camera.aspect = new_size.width as f32 / new_size.height as f32;
+                        // Update camera aspect ratio
+                        if let Some(camera_entity) = self.camera_entity {
+                            if let Ok(camera) =
+                                self.world.query_one_mut::<&mut Camera>(camera_entity)
+                            {
+                                camera.aspect = new_size.width as f32 / new_size.height as f32;
+                            }
                         }
-                    }
 
-                    window.request_redraw();
+                        window.request_redraw();
+                    }
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
@@ -125,52 +129,64 @@ impl<'window> ApplicationHandler for App<'window> {
                 }
             }
             WindowEvent::RedrawRequested => {
-                let now = Instant::now();
-                let dt = self
-                    .last_frame_time
-                    .map(|t| now.duration_since(t))
-                    .unwrap_or_default();
-
-                const TARGET_FRAMETIME: Duration = Duration::from_millis(10);
-
-                if dt < TARGET_FRAMETIME {
-                    thread::sleep(TARGET_FRAMETIME.saturating_sub(dt));
-                }
-
-                let now = Instant::now();
-                let dt = self
-                    .last_frame_time
-                    .map(|t| now.duration_since(t))
-                    .unwrap_or_default();
-
-                self.last_frame_time = Some(now);
-
-                update_world(&mut self.world, &mut self.input_system, dt);
-
-                if let (Some(wgpu_ctx), Some(camera_entity)) =
-                    (&mut self.wgpu_ctx, self.camera_entity)
+                if let (Some(wgpu_ctx), Some(camera_entity), Some(window)) =
+                    (&mut self.wgpu_ctx, self.camera_entity, self.window.as_ref())
                 {
-                    if let Ok((transform, camera)) = self
+                    let now = Instant::now();
+                    let dt = self
+                        .last_frame_time
+                        .map(|t| now.duration_since(t))
+                        .unwrap_or_default();
+
+                    let target_framerate: Duration =
+                        Duration::from_millis(if !window.is_minimized().unwrap_or_default() {
+                            10
+                        } else {
+                            200
+                        });
+
+                    if dt < target_framerate {
+                        thread::sleep(target_framerate.saturating_sub(dt));
+                    }
+
+                    let now = Instant::now();
+                    let dt = self
+                        .last_frame_time
+                        .map(|t| now.duration_since(t))
+                        .unwrap_or_default();
+
+                    self.last_frame_time = Some(now);
+
+                    update_world(&mut self.world, &mut self.input_system, dt);
+
+                    if let Ok((transform, _)) = self
                         .world
                         .query_one_mut::<(&Transform, &Camera)>(camera_entity)
                     {
-                        let view_proj = calculate_view_projection(transform, camera);
+                        // Store the transform data we need
+                        let position = transform.position;
+
+                        let view_proj =
+                            calculate_view_projection(&self.world, self.camera_entity.unwrap())
+                                .unwrap();
                         let inv_view_proj = view_proj.invert().unwrap();
-                        let view = calculate_view_matrix(transform);
+                        let view = calculate_view_matrix(&self.world, self.camera_entity.unwrap())
+                            .unwrap();
+
                         wgpu_ctx.update_camera_uniform(
                             view_proj,
                             inv_view_proj,
                             view,
-                            transform.position.into(),
+                            position.into(),
                         );
+                    }
+
+                    if !window.is_minimized().unwrap_or_default() {
+                        wgpu_ctx.draw(&mut self.world, window);
                     }
                 }
 
-                if let Some(wgpu_ctx) = &mut self.wgpu_ctx {
-                    wgpu_ctx.draw(&mut self.world, self.window.as_mut().unwrap());
-                }
-
-                self.input_system.update();
+                self.input_system.update(&mut self.world);
             }
             WindowEvent::MouseInput { button, state, .. } => {
                 let imgui = &mut self.wgpu_ctx.as_mut().unwrap().imgui;

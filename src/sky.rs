@@ -1,117 +1,60 @@
+// src/sky_renderer.rs
+use crate::Settings; // Assuming Settings is accessible
 use std::sync::Arc;
-use tracing::{debug, error, info, trace, warn};
-use wgpu::{
-    BindGroup, BindGroupLayout, ComputePipeline, Device, Queue, ShaderModuleDescriptor,
-    ShaderSource,
-};
+use tracing::info;
+use wgpu::util::DeviceExt;
 
-/// A renderer for atmospheric effects using compute shaders.
+use crate::ShaderHotReload; // Use the alias if needed
+
 pub struct SkyRenderer {
-    device: Arc<Device>,
-    compute_pipeline: ComputePipeline,
-    texture_bind_group: BindGroup,
-    output_bind_group_layout: BindGroupLayout,
-    // Store these so we can recreate the pipeline when the shader changes
-    texture_bind_group_layout: BindGroupLayout,
-    camera_bind_group_layout: BindGroupLayout,
+    device: Arc<wgpu::Device>,
+    queue: Arc<wgpu::Queue>,
+    pub render_pipeline: wgpu::RenderPipeline,
+    pipeline_layout: wgpu::PipelineLayout,
+    shader_hot_reload: Arc<ShaderHotReload>, // To reload sky shader
+    depth_texture_bind_group_layout: wgpu::BindGroupLayout,
+    depth_sampler: Arc<wgpu::Sampler>,
+    pub depth_texture_bind_group: Option<wgpu::BindGroup>, // Option<> because view changes on resize
 }
 
 impl SkyRenderer {
-    /// Creates a new AtmosphereRenderer with resources for atmospheric rendering.
     pub fn new(
-        device: Arc<Device>,
-        queue: Arc<Queue>,
-        camera_bind_group_layout: &BindGroupLayout,
+        device: Arc<wgpu::Device>,
+        queue: Arc<wgpu::Queue>,
+        camera_bind_group_layout: &wgpu::BindGroupLayout,
+        shader_hot_reload: Arc<ShaderHotReload>,
+        output_format: wgpu::TextureFormat, // The format of the texture we render to (Rgba32Float)
     ) -> Self {
-        // Create texture bind group layout and resources
-        let (texture_bind_group_layout, texture_bind_group) =
-            Self::create_texture_resources(&device);
-
-        // Create output bind group layout
-        let output_bind_group_layout =
+        // Layout for binding the custom depth texture (R32Float) and a sampler
+        let depth_texture_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::StorageTexture {
-                        access: wgpu::StorageTextureAccess::WriteOnly,
-                        format: wgpu::TextureFormat::Rgba32Float,
-                        view_dimension: wgpu::TextureViewDimension::D2,
+                label: Some("Sky Depth Texture Bind Group Layout"),
+                entries: &[
+                    // Depth Texture (read-only)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false }, // R32Float isn't filterable
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
                     },
-                    count: None,
-                }],
-                label: Some("atmosphere_output_bind_group_layout"),
+                    // Sampler (required even for textureLoad sometimes)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        // Use NonFiltering if you only use textureLoad
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                        count: None,
+                    },
+                ],
             });
 
-        // Load default embedded shader if none provided
-        let shader_module = Self::create_default_shader_module(&device);
-
-        // Create compute pipeline
-        let compute_pipeline = Self::create_compute_pipeline(
-            &device,
-            &texture_bind_group_layout,
-            camera_bind_group_layout,
-            &output_bind_group_layout,
-            &shader_module,
-        );
-
-        Self {
-            device,
-            compute_pipeline,
-            texture_bind_group,
-            output_bind_group_layout,
-            texture_bind_group_layout,
-            camera_bind_group_layout: camera_bind_group_layout.clone(),
-        }
-    }
-
-    /// Creates the default shader module from embedded WGSL code
-    fn create_default_shader_module(device: &Device) -> wgpu::ShaderModule {
-        device.create_shader_module(ShaderModuleDescriptor {
-            label: Some("Atmosphere Compute Shader"),
-            source: ShaderSource::Wgsl(include_str!("shaders/atmosphere.wgsl").into()),
-        })
-    }
-
-    /// Updates the compute pipeline with a new shader module
-    pub fn update_shader(&mut self, shader_module: &wgpu::ShaderModule) {
-        // Create compute pipeline with the new shader
-        let compute_pipeline = Self::create_compute_pipeline(
-            &self.device,
-            &self.texture_bind_group_layout,
-            &self.camera_bind_group_layout,
-            &self.output_bind_group_layout,
-            shader_module,
-        );
-
-        // Update the pipeline
-        self.compute_pipeline = compute_pipeline;
-
-        info!("Reloaded atmosphere compute shader");
-    }
-
-    /// Creates texture resources for the atmosphere renderer
-    fn create_texture_resources(device: &Device) -> (BindGroupLayout, BindGroup) {
-        // Create a dummy 1x1 texture as a placeholder (required by the shader)
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Atmosphere Dummy Texture"),
-            size: wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-        // Create a sampler with clamping behavior
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("Atmosphere Sampler"),
+        // Create a simple sampler
+        let depth_sampler = Arc::new(device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Sky Depth Sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
@@ -119,127 +62,129 @@ impl SkyRenderer {
             min_filter: wgpu::FilterMode::Nearest,
             mipmap_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
-        });
+        }));
 
-        // Define the bind group layout for texture and sampler (group 0 in the shader)
-        let texture_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Texture {
-                            multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                ],
-                label: Some("atmosphere_texture_bind_group_layout"),
-            });
-
-        // Create the bind group for texture and sampler
-        let texture_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &texture_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
-                },
-            ],
-            label: Some("atmosphere_texture_bind_group"),
-        });
-
-        (texture_bind_group_layout, texture_bind_group)
-    }
-
-    /// Creates the compute pipeline for atmospheric rendering
-    fn create_compute_pipeline(
-        device: &Device,
-        texture_bind_group_layout: &BindGroupLayout,
-        camera_bind_group_layout: &BindGroupLayout,
-        output_bind_group_layout: &BindGroupLayout,
-        shader_module: &wgpu::ShaderModule,
-    ) -> ComputePipeline {
-        // Create the pipeline layout with all bind group layouts
+        // Create pipeline layout: Camera (0), Depth+Sampler (1), Settings (2)
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Atmosphere Compute Pipeline Layout"),
-            bind_group_layouts: &[
-                texture_bind_group_layout, // Group 0: Texture and sampler
-                camera_bind_group_layout,  // Group 1: Camera uniform
-                output_bind_group_layout,  // Group 2: Output texture
-            ],
+            label: Some("Sky Render Pipeline Layout"),
+            bind_group_layouts: &[camera_bind_group_layout, &depth_texture_bind_group_layout],
             push_constant_ranges: &[],
         });
 
-        // Debug shader module information if available
-        #[cfg(debug_assertions)]
-        {
-            info!(
-                "Creating compute pipeline with shader module: {:?}",
-                shader_module
-            );
-            info!("Attempting to use entry point: 'main'");
-        }
+        // Get the initial sky shader
+        let sky_shader = shader_hot_reload.get_shader("sky.wgsl");
 
-        // Create the compute pipeline
-        device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("Atmosphere Compute Pipeline"),
-            layout: Some(&pipeline_layout),
-            module: shader_module,
-            entry_point: Some("main"),
-            compilation_options: Default::default(),
+        // Create the render pipeline
+        let render_pipeline =
+            Self::create_pipeline(&device, &pipeline_layout, &sky_shader, output_format);
+
+        Self {
+            device,
+            queue,
+            render_pipeline,
+            pipeline_layout,
+            shader_hot_reload,
+            depth_texture_bind_group_layout,
+            depth_sampler,
+            depth_texture_bind_group: None, // Will be created on first resize/draw
+        }
+    }
+
+    /// Creates the graphics pipeline for sky rendering
+    fn create_pipeline(
+        device: &wgpu::Device,
+        pipeline_layout: &wgpu::PipelineLayout,
+        shader: &wgpu::ShaderModule,
+        output_format: wgpu::TextureFormat,
+    ) -> wgpu::RenderPipeline {
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Sky Render Pipeline"),
+            layout: Some(pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: shader,
+                entry_point: Some("vs_main"),
+                buffers: &[], // Vertex positions generated in shader
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: output_format,
+                    // Blend state might be needed if you want transparency later,
+                    // but for opaque sky replacing background, None/Replace is fine.
+                    // Use AlphaBlending if sky can be semi-transparent.
+                    blend: Some(wgpu::BlendState::REPLACE), // Overwrite pixels where depth test passes
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleStrip, // Fullscreen quad
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None, // Render front face of the quad
+                ..Default::default()
+            },
+            depth_stencil: None, // No depth/stencil testing in this pass
+            multisample: wgpu::MultisampleState::default(), // No MSAA
+            multiview: None,
             cache: None,
         })
     }
 
-    /// Creates a bind group for the output texture
-    pub fn create_output_bind_group(
-        &self,
-        device: &Device,
-        texture_view: &wgpu::TextureView,
-    ) -> BindGroup {
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &self.output_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(texture_view),
-            }],
-            label: Some("atmosphere_output_bind_group"),
-        })
+    /// Updates the bind group containing the depth texture view. Call this on resize.
+    pub fn update_depth_texture_bind_group(&mut self, depth_texture_view: &wgpu::TextureView) {
+        self.depth_texture_bind_group =
+            Some(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Sky Depth Texture Bind Group"),
+                layout: &self.depth_texture_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(depth_texture_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.depth_sampler),
+                    },
+                ],
+            }));
     }
 
-    /// Renders the atmosphere using compute shaders
-    pub fn render(
-        &self,
-        compute_pass: &mut wgpu::ComputePass,
-        output_bind_group: &BindGroup,
-        width: u32,
-        height: u32,
-    ) {
-        // Set the pipeline and bind groups
-        compute_pass.set_pipeline(&self.compute_pipeline);
-        compute_pass.set_bind_group(0, &self.texture_bind_group, &[]);
-        // Camera bind group is set at index 1 externally before calling this method
-        compute_pass.set_bind_group(2, output_bind_group, &[]);
+    /// Checks for shader updates and recreates the pipeline if necessary.
+    pub fn check_shader_updates(&mut self, output_format: wgpu::TextureFormat) {
+        if self
+            .shader_hot_reload
+            .check_for_updates()
+            .contains(&"sky.wgsl".to_string())
+        {
+            info!("Reloading sky shader");
+            let sky_shader = self.shader_hot_reload.get_shader("sky.wgsl");
+            self.render_pipeline = Self::create_pipeline(
+                &self.device,
+                &self.pipeline_layout,
+                &sky_shader,
+                output_format,
+            );
+        }
+    }
 
-        // Calculate workgroup counts (e.g., 16x16 threads per workgroup)
-        let workgroup_size = 16;
-        let work_x = (width + workgroup_size - 1) / workgroup_size;
-        let work_y = (height + workgroup_size - 1) / workgroup_size;
+    /// Add this renderer's pass to draw the sky
+    pub fn render<'rpass>(&'rpass self, rpass: &mut wgpu::RenderPass<'rpass>) {
+        if let Some(depth_bind_group) = &self.depth_texture_bind_group {
+            rpass.set_pipeline(&self.render_pipeline);
+            // Bind groups are set outside in WgpuCtx::draw based on the layout
+            // Group 0: Camera (Set in WgpuCtx)
+            // Group 1: Depth Texture
+            rpass.set_bind_group(1, depth_bind_group, &[]);
+            // Group 2: Settings (Set in WgpuCtx)
 
-        // Dispatch the compute shader
-        compute_pass.dispatch_workgroups(work_x, work_y, 1);
+            // Draw the fullscreen quad (4 vertices for triangle strip)
+            rpass.draw(0..4, 0..1);
+        } else {
+            // This shouldn't happen after the first frame/resize, but good to check.
+            tracing::warn!("SkyRenderer depth_texture_bind_group not set, skipping render.");
+        }
     }
 }

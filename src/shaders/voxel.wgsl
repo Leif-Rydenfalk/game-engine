@@ -1,122 +1,7 @@
 // voxel.wgsl
 
-const PI = 3.14159265359;
-const betaR = vec3f(5.5e-6, 13.0e-6, 22.4e-6);
-const betaM = vec3f(21e-6);
-const hR = 7994.0;
-const hM = 1200.0;
-const earth_radius = 6360e3;
-const atmosphere_radius = 6420e3;
-const sun_power = 10.0;
-const g = 0.76;
-const k = 1.55 * g - 0.55 * (g * g * g);
-const num_samples = 1;
-const num_samples_light = 1;
-
-struct Ray {
-    origin: vec3f,
-    direction: vec3f,
-};
-
-struct Sphere {
-    origin: vec3f,
-    radius: f32,
-    material: i32,
-};
-
-struct IsectResult {
-    hit: bool,
-    t0: f32,
-    t1: f32,
-};
-
-const atmosphere = Sphere(vec3f(0.0, 0.0, 0.0), atmosphere_radius, 0);
-
-fn isect_sphere(ray: Ray, sphere: Sphere) -> IsectResult {
-    let rc = sphere.origin - ray.origin;
-    let radius2 = sphere.radius * sphere.radius;
-    let tca = dot(rc, ray.direction);
-    let d2 = dot(rc, rc) - tca * tca;
-    if d2 > radius2 {
-        return IsectResult(false, 0.0, 0.0);
-    }
-    let thc = sqrt(radius2 - d2);
-    let t0 = tca - thc;
-    let t1 = tca + thc;
-    return IsectResult(true, t0, t1);
-}
-
-fn rayleigh_phase_func(mu: f32) -> f32 {
-    return 3.0 * (1.0 + mu * mu) / (16.0 * PI);
-}
-
-fn henyey_greenstein_phase_func(mu: f32) -> f32 {
-    return (1.0 - g * g) / (4.0 * PI * pow(1.0 + g * g - 2.0 * g * mu, 1.5));
-}
-
-fn get_sun_light(ray: Ray, optical_depthR: ptr<function, f32>, optical_depthM: ptr<function, f32>) -> bool {
-    let isect = isect_sphere(ray, atmosphere);
-    if !isect.hit {
-        return false;
-    }
-    let t1 = isect.t1;
-    let march_step = t1 / f32(num_samples_light);
-    var march_pos = 0.0;
-    for (var i = 0; i < num_samples_light; i = i + 1) {
-        let s = ray.origin + ray.direction * (march_pos + 0.5 * march_step);
-        let height = length(s) - earth_radius;
-        if height < 0.0 {
-            return false;
-        }
-        *optical_depthR += exp(-height / hR) * march_step;
-        *optical_depthM += exp(-height / hM) * march_step;
-        march_pos += march_step;
-    }
-    return true;
-}
-
-fn get_incident_light(ray: Ray, sun_dir: vec3f) -> vec3f {
-    let isect = isect_sphere(ray, atmosphere);
-    if !isect.hit {
-        return vec3f(0.0);
-    }
-    let t1 = isect.t1;
-    let march_step = t1 / f32(num_samples);
-    let mu = dot(ray.direction, sun_dir);
-    let phaseR = rayleigh_phase_func(mu);
-    let phaseM = henyey_greenstein_phase_func(mu);
-    var optical_depthR = 0.0;
-    var optical_depthM = 0.0;
-    var sumR = vec3f(0.0);
-    var sumM = vec3f(0.0);
-    var march_pos = 0.0;
-    for (var i = 0; i < num_samples; i = i + 1) {
-        let s = ray.origin + ray.direction * (march_pos + 0.5 * march_step);
-        let height = length(s) - earth_radius;
-        let hr = exp(-height / hR) * march_step;
-        let hm = exp(-height / hM) * march_step;
-        optical_depthR += hr;
-        optical_depthM += hm;
-        let light_ray = Ray(s, sun_dir);
-        var optical_depth_lightR = 0.0;
-        var optical_depth_lightM = 0.0;
-        let overground = get_sun_light(light_ray, &optical_depth_lightR, &optical_depth_lightM);
-        if overground {
-            let tau = betaR * (optical_depthR + optical_depth_lightR) + betaM * 1.1 * (optical_depthM + optical_depth_lightM);
-            let attenuation = exp(-tau);
-            sumR += hr * attenuation;
-            sumM += hm * attenuation;
-        }
-        march_pos += march_step;
-    }
-    var c = sun_power * (sumR * phaseR * betaR + sumM * phaseM * betaM);
-    c = pow(c, vec3<f32>(1.5));
-    c = c / (1.0 + c);
-    c = pow(c, vec3<f32>(1.0 / 1.5));
-    c = mix(c, c * c * (3.0 - 2.0 * c), vec3<f32>(1.0));
-    c = pow(c, vec3<f32>(1.3, 1.20, 1.0));
-    c = pow(c, vec3<f32>(0.7 / 2.2));
-    return c;
+fn sin_0_1(v: f32) -> f32 {
+    return sin(v) * 2.0 + 1.0;
 }
 
 struct Settings {
@@ -165,19 +50,6 @@ struct CameraUniform {
     time: f32,
 };
 
-struct VertexInput {
-    @location(0) position: vec3f,
-    @location(1) tex_uv: vec2f,
-    @location(2) normal: vec3f,
-};
-
-struct VertexOutput {
-    @builtin(position) position: vec4f,
-    @location(0) tex_uv: vec2f,
-    @location(1) normal: vec3f,
-    @location(2) world_position: vec3f,
-};
-
 struct HitInfo {
     is_hit: bool,
     t: f32,
@@ -186,28 +58,14 @@ struct HitInfo {
     i: i32,
 };
 
-// Utility Functions
-fn smin(d1: f32, d2: f32, k: f32) -> f32 {
-    let h = clamp(0.5 + 0.5 * (d2 - d1) / k, 0.0, 1.0);
-    return mix(d2, d1, h) - k * h * (1.0 - h);
-}
-
 fn smax(d1: f32, d2: f32, k: f32) -> f32 {
     let h = clamp(0.5 - 0.5 * (d2 - d1) / k, 0.0, 1.0);
     return mix(d2, d1, h) + k * h * (1.0 - h);
 }
 
-fn hash13(p: vec3f) -> f32 {
-    var p3 = fract(p * 0.1031);
-    p3 += dot(p3, p3.yzx + 33.33);
-    return fract((p3.x + p3.y) * p3.z);
-}
-
-// Added hash23 function for film grain effect
-fn hash23(p: vec3f) -> vec2f {
-    var p3 = fract(p * vec3f(0.1031, 0.1030, 0.0973));
-    p3 += dot(p3, p3.yzx + 33.33);
-    return fract((p3.xx + p3.yz) * p3.zy);
+fn smin(d1: f32, d2: f32, k: f32) -> f32 {
+    let h = clamp(0.5 + 0.5 * (d2 - d1) / k, 0.0, 1.0);
+    return mix(d2, d1, h) - k * h * (1.0 - h);
 }
 
 fn triplanarLod(p: vec3f, n: vec3f, k: f32, tex_index: i32, lod: f32) -> vec3f {
@@ -229,19 +87,28 @@ fn map(p: vec3f) -> f32 {
     let sc: f32 = 0.3;
     // Terrain generation remains the same
     let q: vec3f = sc * p / 32.0 - vec3f(0.003, -0.006, 0.0);
-    d = textureSample(gray_cube_noise_texture, terrain_sampler, q * 1.0).r * 0.5;
-    d += textureSample(gray_cube_noise_texture, terrain_sampler, q * 2.0 + vec3f(0.3, 0.3, 0.3)).r * 0.25;
+    d = textureSample(gray_cube_noise_texture, terrain_sampler, q * 0.6).r * 0.4;
+    d += textureSample(gray_cube_noise_texture, terrain_sampler, q * 2.0 + vec3f(0.3, 0.3, 0.3)).r * 0.15;
     d += textureSample(gray_cube_noise_texture, terrain_sampler, q * 4.0 + vec3f(0.7, 0.7, 0.7)).r * 0.125;
     var tp = smoothstep(50.0, -6.0, p.y);
     tp = tp * tp;
-    d = (d / 0.875 - settings.surface_factor) / sc;
-    d = smax(d, p.y - settings.max_height, 0.6);
-    
-    // let camera_pos = camera.camera_position;
-    // let camera_distance = length(p - camera_pos);
-    
-    // // Remove terrain to close to the camera
-    // d = smax(d, settings.min_dist - camera_distance, 0.3);
+    //d = (d / 0.875 - settings.surface_factor) / sc;
+    d = 1.0 - d * 5.0;
+
+    //let n = textureSample(gray_cube_noise_texture, terrain_sampler, vec3(p.xz * 0.01, 0.1)).r * 5.0;
+    let n = 0.0;
+    d = smax(d, p.y - settings.max_height - n, 2.6);
+
+    // var mask = textureSample(gray_cube_noise_texture, terrain_sampler, q * 0.05).r * 1.7;
+    // mask = smax(mask, p.y - settings.max_height, 0.6);
+
+    //var mask = textureSample(gray_cube_noise_texture, terrain_sampler, q * 0.05).r * 1.7;
+    //d = smax(d, -mask, 6.0);
+
+
+    let sphere_d = length(p) - 10.0;
+    // d = smin(d, sphere_d, 6.0);
+    d = smax(d, -sphere_d, 6.0);
 
     return d;
 }
@@ -259,8 +126,8 @@ fn get_voxel_pos(p: vec3f, s: f32) -> vec3f {
     return (floor(p / s) + 0.5) * s;
 }
 
-fn trace(ro: vec3f, rd: vec3f, tmax: f32) -> HitInfo {
-    let s = settings.voxel_size;
+fn trace(ro: vec3f, rd: vec3f, tmax: f32, s: f32) -> HitInfo {
+    // let s = settings.voxel_size;
     let sd = s * sqrt(3.0);
     let ird = 1.0 / rd;
     let srd = sign(ird);
@@ -294,18 +161,23 @@ fn trace(ro: vec3f, rd: vec3f, tmax: f32) -> HitInfo {
                 nrd = vec3f(0.0, 0.0, srd.z);
             }
             if d < 0.0 {
+                // Smoothes out the normals
+                // let hit_pos_approx = ro + rd * t;
+                // let surface_normal = normalize(grad(vpos));
+                // return HitInfo(true, t, surface_normal, vpos, i);
                 return HitInfo(true, t, -prd, vpos, i);
             } else if d > sd && vi > 2 {
                 voxel = false;
                 t = tF + sd;
                 continue;
             }
+
             vpos += nrd * s;
             prd = nrd;
             t = tF + settings.eps;
             vi += 1;
         }
-        if t >= tmax || (rd.y > 0.0 && pos.y > settings.max_height) {
+        if t >= tmax || (rd.y > 0.0 && pos.y > 10.0) {
             return HitInfo(false, t, vec3f(0.0), vec3f(0.0), i);
         }
     }
@@ -326,13 +198,13 @@ fn triplanar(p: vec3f, n: vec3f, k: f32, tex_index: i32) -> vec3f {
     return col;
 }
 
-fn getBiome(pos: vec3f) -> vec2f {
+fn get_biome(pos: vec3f) -> vec2f {
     let snow = textureSample(dirt_texture, terrain_sampler, pos.xz * 0.00015).r;
     let desert = textureSample(dirt_texture, terrain_sampler, vec2f(0.55) - pos.zx * 0.00008).g;
     return vec2f(smoothstep(0.67, 0.672, desert), smoothstep(0.695, 0.7, snow));
 }
 
-fn getAlbedo(vpos: vec3f, gn: vec3f, lod: f32) -> vec3f {
+fn get_voxel_color(vpos: vec3f, gn: vec3f, lod: f32) -> vec3f {
     var alb = vec3f(1.0) - triplanarLod(vpos * 0.08, gn, 4.0, 2, lod);
     alb *= alb;
     var alb2 = vec3f(1.0) - triplanarLod(vpos * 0.08, gn, 4.0, 3, lod);
@@ -344,7 +216,7 @@ fn getAlbedo(vpos: vec3f, gn: vec3f, lod: f32) -> vec3f {
     alb = alb * 0.95 * vec3f(1.0, 0.7, 0.65) + 0.05;
     alb = mix(alb, alb2 * vec3f(0.55, 1.0, 0.1), top * wk);
     alb = mix(alb, smoothstep(vec3f(0.0), vec3f(1.0), alb2), smoothstep(0.3, 0.25, k) * (1.0 - top));
-    let biome = getBiome(vpos);
+    let biome = get_biome(vpos);
     var snow = alb2 * 0.8 + 0.2 * vec3f(0.25, 0.5, 1.0);
     snow = mix(snow, vec3f(0.85, 0.95, 1.0), top * wk * 0.5);
     alb = mix(alb, clamp(vec3f(1.0, 0.95, 0.9) - alb2 * 0.65, vec3f(0.0), vec3f(1.0)), biome.x);
@@ -361,49 +233,44 @@ fn shade(pos: vec3f, ldir: vec3f, lod: f32, hit: HitInfo) -> vec3f {
     let g = grad(vpos);
     let gn = g / length(g);
     let n = hit.n;
+
+    var col = get_voxel_color(vpos, gn, lod);
+
     var dif = max(dot(n, ldir), 0.0);
     if dif > 0.0 {
-        let hitL = trace(pos + n * 1e-3, ldir, 12.0);
+        let tmax = 100000000.0;
+        let hitL = trace(pos + n * 1e-3, ldir, tmax, settings.voxel_size);
         if hitL.is_hit { dif = 0.0; }
     }
-    var col = getAlbedo(vpos, gn, lod);
+
     let ao = smoothstep(-0.08, 0.04, map(pos) / length(grad(pos)));
-    let hao = smoothstep(settings.water_height - 12.0, settings.water_height, pos.y);
+   // let hao = smoothstep(settings.water_height - 12.0, settings.water_height, pos.y);
     col *= dot(abs(n), vec3f(0.8, 1.0, 0.9));
-    // Fixed: Added missing * operators
     col *= (dif * 0.6 + 0.4) * settings.light_color.rgb;
-    col *= (ao * 0.6 + 0.4) * (hao * 0.6 + 0.4);
+    col *= (ao * 0.6 + 0.5); //* (hao * 0.6 + 0.4);
     return col;
 }
 
-fn shade2(pos: vec3f, ldir: vec3f, lod: f32, hit: HitInfo) -> vec3f {
-    let vpos = hit.id;
-    let g = grad(vpos);
-    let gn = g / length(g);
-    let n = hit.n;
-    let dif = max(dot(n, ldir), 0.0);
+fn ACESFilm(x: vec3<f32>) -> vec3<f32> {
+    let a: f32 = 2.51;
+    let b: f32 = 0.03;
+    let c: f32 = 2.43;
+    let d: f32 = 0.59;
+    let e: f32 = 0.14;
 
-    var col = getAlbedo(vpos, gn, lod);
-    let ao = smoothstep(-0.08, 0.04, map(pos) / length(grad(pos)));
-    let hao = smoothstep(settings.water_height - 12.0, settings.water_height, pos.y);
-
-    col *= dot(abs(n), vec3f(0.8, 1.0, 0.9));
-    col *= (dif * 0.6 + 0.4) * settings.light_color.rgb;
-    col *= ao * 0.6 + 0.4;
-    col *= hao * 0.6 + 0.4;
-
-    return col;
+    return clamp((x * (a * x + vec3<f32>(b))) / (x * (c * x + vec3<f32>(d)) + vec3<f32>(e)), vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
-fn get_water_height(uv: vec2f, terrain_sampler: sampler, grain_texture: texture_2d<f32>) -> f32 {
-    // return textureSample(grain_texture, terrain_sampler, uv).r;
-    return 0.0;
-}
+struct VertexInput {
+    @location(0) position: vec3f,
+    @location(1) tex_uv: vec2f,
+    @location(2) normal: vec3f,
+};
 
-fn ACESFilm(x: vec3f) -> vec3f {
-    let a = 2.51; let b = 0.03; let c = 2.43; let d = 0.59; let e = 0.14;
-    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), vec3f(0.0), vec3f(1.0));
-}
+struct VertexOutput {
+    @builtin(position) position: vec4f,
+    @location(0) tex_uv: vec2f,
+};
 
 @vertex
 fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
@@ -418,119 +285,61 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     var output: VertexOutput;
     output.position = vec4f(positions[vertex_index], 0.0, 1.0);
     output.tex_uv = tex_coords[vertex_index];
-    output.normal = vec3f(0.0, 0.0, 1.0);
-    output.world_position = vec3f(0.0);
     return output;
 }
 
+struct FragmentOutput {
+    @location(0) color: vec4f,
+    @location(1) depth: f32, // Output for our custom depth buffer
+}
+
 @fragment
-fn fs_main(input: VertexOutput) -> @location(0) vec4f {
+fn fs_main(input: VertexOutput) -> FragmentOutput {
     let ro = camera.camera_position;
     var ndc = vec4f(input.tex_uv * 2.0 - 1.0, 1.0, 1.0);
-    ndc.y *= -1.0;
+    ndc.y *= -1.0; // Flip Y for UV coords
     let world_pos = camera.inv_view_proj * ndc;
     let rd = normalize(world_pos.xyz / world_pos.w - ro);
     let sun_dir = normalize(settings.light_direction.xyz);
-    var sky_ro = ro + vec3f(0.0, earth_radius + 1.0, 0.0);
 
-    if settings.visualize_distance_field != 0 {
-        let pos = ro + rd * 10.0;
-        let d = map(pos);
-        return vec4f(vec3f(d * 0.1 + 0.5), 1.0);
-    }
+    // --- Prepare output struct ---
+    var output: FragmentOutput;
+    output.color = vec4f(0.0, 0.0, 0.0, 1.0); // Default color
+    output.depth = settings.max_dist; // Default depth (far distance) if its this we know its probably sky
 
-    let hit = trace(ro, rd, settings.max_dist);
-    var col = vec3f(0.0);
-    var t = hit.t;
+    let hit = trace(ro, rd, settings.max_dist, settings.voxel_size);
+    var col = vec3f(0.0); // Initialize color calculation variable
+    var t = hit.t;       // Use local 't' for clarity
 
     if hit.is_hit {
         let pos = ro + rd * hit.t;
         let lod = clamp(log2(distance(ro, hit.id)) - 2.0, 0.0, 6.0);
         col = shade(pos, sun_dir, lod, hit);
-    } else {
-        // col = get_incident_light(Ray(sky_ro, rd), sun_dir);
-        col = vec3f(1.0);
-        t = settings.max_dist;
-    }
+        t = hit.t; // Assign the hit distance
+    } 
 
-    // let pt = -(ro.y - settings.water_height) / rd.y;
-    // if ((pt > 0.0 && pt < t)) || ro.y < settings.water_height {
-    //     if !hit.is_hit {
-    //         let biome = getBiome(ro + rd * pt);
-    //         col = mix(vec3f(0.5, 0.8, 1.0), vec3f(1.0, 0.85, 0.6), biome.x);
-    //     }
+    // --- Apply fog (optional, applied before debug views) ---
+    // let dist_factor = max(0.0, t - 50.0);
+    // let fog_scale = 0.0001;
+    // let fog_amount = exp(-dist_factor * fog_scale);
+    // col = mix(vec3f(1.0), col, fog_amount); // Mix towards white fog
 
-    //     let biome = getBiome(ro + rd * pt);
-    //     var wcol = vec3f(0.3, 0.8, 1.0);
-    //     wcol = mix(wcol, vec3f(0.4, 0.9, 0.8), biome.x);
-    //     wcol = mix(wcol, vec3f(0.1, 0.7, 0.9), biome.y);
-
-    //     let wabs = vec3f(0.1, 0.7, 0.9);
-
-    //     var adjusted_pt = pt;
-    //     if ro.y < settings.water_height && pt < 0.0 {
-    //         adjusted_pt = settings.max_dist;
-    //     }
-
-    //     let wpos = ro + rd * adjusted_pt;
-
-    //     let e = 0.001;
-    //     let wnstr = 1500.0;
-    //     let wo = vec2f(1.0, 0.8) * camera.time * 0.01;
-    //     let wuv = wpos.xz * 0.08 + wo;
-    //     let wh = get_water_height(wuv, terrain_sampler, grain_texture);
-    //     let whdx = get_water_height(wuv + vec2f(e, 0.0), terrain_sampler, grain_texture);
-    //     let whdy = get_water_height(wuv + vec2f(0.0, e), terrain_sampler, grain_texture);
-    //     let wn = normalize(vec3f(wh - whdx, e * wnstr, wh - whdy));
-    //     let wref = reflect(rd, wn);
-
-    //     var rcol = vec3f(0.0);
-    //     if ro.y > settings.water_height {
-    //         let hitR = trace(wpos + vec3f(0.0, 0.01, 0.0), wref, 15.0);
-    //         let lod = clamp(log2(distance(ro, hitR.id)) - 2.0, 0.0, 6.0);
-
-    //         if hitR.is_hit {
-    //             rcol = shade2(wpos, sun_dir, lod, hitR);
-    //         } else {
-    //             let w_sky_ro = wpos + vec3f(0.0, earth_radius, 0.0);
-    //             rcol = get_incident_light(Ray(wpos, wref), sun_dir);
-    //         }
-    //     }
-        
-    //     // Specular highlight
-    //     let spec = pow(max(dot(wref, sun_dir), 0.0), 50.0);
-        
-    //     // Fresnel reflection factor
-    //     let r0 = 0.35;
-    //     var fre = r0 + (1.0 - r0) * pow(max(dot(rd, wn), 0.0), 5.0);
-
-    //     if rd.y < 0.0 && ro.y < settings.water_height {
-    //         fre = 0.0;
-    //     }
-        
-    //     // Water absorption
-    //     let abt = select(t - pt, min(t, pt), ro.y < settings.water_height);
-    //     col *= exp(-abt * (1.0 - wabs) * 0.1);
-
-    //     if pt < t {
-    //         col = mix(col, wcol * (rcol + spec), fre);
-            
-    //         // Foam effect
-    //         let wp = wpos + wn * vec3f(1.0, 0.0, 1.0) * 0.2;
-    //         let wd = map(wp) / length(grad(wp));
-    //         let foam = sin((wd - camera.time * 0.03) * 60.0);
-    //         let foam_mask = smoothstep(0.22, 0.0, wd + foam * 0.03 + (wh - 0.5) * 0.12);
-    //         col = mix(col, col + vec3f(1.0), foam_mask * 0.4);
-    //     }
-    // }
-
-    if settings.show_normals != 0 {
-        col = hit.n;
+    // --- Debug visualizations ---
+    if settings.show_normals != 0 && hit.is_hit {
+        col = hit.n * 0.5 + 0.5; // Map normal to color range
     }
 
     if settings.show_steps != 0 {
         col = vec3f(f32(hit.i) / f32(settings.steps));
     }
 
-    return vec4f(col, 1.0);
+    // --- Final color processing ---
+    col = pow(col, vec3f(1.7));
+    col = ACESFilm(col);       
+
+    // --- Assign final values to output struct ---
+    output.color = vec4f(col, 1.0);
+    output.depth = t; // Assign the calculated depth (hit distance or max_dist)
+
+    return output;
 }

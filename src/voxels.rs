@@ -59,9 +59,9 @@ impl Default for Settings {
             camera_time_offset: 0.0,
             voxel_level,
             voxel_size,
-            // steps: 512 * 2 * 2,
+            //steps: 512 * 2 * 2,
             steps: 512, // Too low values causes artifact around edges
-            max_dist: 20.0,
+            max_dist: 20000000000.0,
             min_dist: 0.0001,
             eps: 1e-5,
             light_color: [1.0, 0.9, 0.75, 2.0],
@@ -100,8 +100,6 @@ pub struct VoxelRenderer {
     pub voxel_settings: Settings,
     voxel_settings_buffer: wgpu::Buffer,
     voxel_settings_bind_group: wgpu::BindGroup,
-    pub sun_incline: f32,
-    pub time_of_day: f32,
     rgb_noise_texture: wgpu::Texture,
     gray_noise_texture: wgpu::Texture,
     gray_noise_cube_texture: wgpu::Texture,
@@ -394,7 +392,13 @@ impl VoxelRenderer {
         let voxel_shader = shader_hot_reload.get_shader("voxel.wgsl");
 
         // Create render pipeline with hot reloaded shader
-        let render_pipeline = Self::create_pipeline(&device, &pipeline_layout, &voxel_shader);
+        let render_pipeline = Self::create_pipeline(
+            &device,
+            &pipeline_layout,
+            &voxel_shader,
+            wgpu::TextureFormat::Rgba32Float, // Main color format
+            wgpu::TextureFormat::R32Float,    // Custom depth format
+        );
 
         Self {
             device,
@@ -407,8 +411,6 @@ impl VoxelRenderer {
             voxel_settings,
             voxel_settings_buffer,
             voxel_settings_bind_group,
-            sun_incline: 0.5,
-            time_of_day: 12.0,
             rgb_noise_texture,
             gray_noise_texture,
             gray_noise_cube_texture,
@@ -421,46 +423,57 @@ impl VoxelRenderer {
         }
     }
 
-    /// Create pipeline with the provided shader
+    /// Create pipeline with the provided shader and target formats
     pub fn create_pipeline(
         device: &wgpu::Device,
         pipeline_layout: &wgpu::PipelineLayout,
         shader: &wgpu::ShaderModule,
+        color_format: wgpu::TextureFormat, // Format for @location(0)
+        depth_format: wgpu::TextureFormat, // Format for @location(1)
     ) -> wgpu::RenderPipeline {
         device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Voxel Render Pipeline"),
             layout: Some(pipeline_layout),
             vertex: wgpu::VertexState {
                 module: shader,
-                entry_point: Some("vs_main"),
-                buffers: &[create_vertex_buffer_layout()],
+                entry_point: Some("vs_main"), // Ensure this matches your vertex shader entry point
+                // --- FIX: Use an empty slice for buffers ---
+                // This tells the pipeline not to expect any vertex buffers,
+                // which is correct when generating vertices in the shader.
+                buffers: &[],
+                // -----------------------------------------
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module: shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::Rgba32Float,
-                    blend: None, // Some(wgpu::BlendState::REPLACE)
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
+                entry_point: Some("fs_main"), // Ensure this matches your fragment shader entry point
+                targets: &[
+                    // Target @location(0) - Color
+                    Some(wgpu::ColorTargetState {
+                        format: color_format,
+                        blend: None, // Or Some(wgpu::BlendState::REPLACE)
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                    // Target @location(1) - Custom Depth
+                    Some(wgpu::ColorTargetState {
+                        format: depth_format,
+                        blend: None, // No blending needed for depth
+                        write_mask: wgpu::ColorWrites::ALL, // Write the single float channel
+                    }),
+                ],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             }),
             primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
+                topology: wgpu::PrimitiveTopology::TriangleStrip, // Use TriangleStrip for 4 vertices
+                strip_index_format: None, // None for TriangleStrip with 4 vertices
                 front_face: wgpu::FrontFace::Ccw,
-                cull_mode: Some(wgpu::Face::Back),
+                cull_mode: None, // No culling needed for a fullscreen quad
                 unclipped_depth: false,
                 polygon_mode: wgpu::PolygonMode::Fill,
                 conservative: false,
             },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState {
-                count: 1,
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
+            depth_stencil: None, // We are not using the traditional depth buffer here
+            multisample: wgpu::MultisampleState::default(), // No MSAA
             multiview: None,
             cache: None,
         })
@@ -471,24 +484,46 @@ impl VoxelRenderer {
         let updated_shaders = self.shader_hot_reload.check_for_updates();
 
         if updated_shaders.contains(&"voxel.wgsl".to_string()) {
-            info!("Reloading voxel shader");
-            let voxel_shader = self.shader_hot_reload.get_shader("voxel.wgsl");
-            self.render_pipeline =
-                Self::create_pipeline(&self.device, &self.pipeline_layout, &voxel_shader);
+            self.reload_shader();
         }
     }
 
-    /// Renders the voxel scene within a render pass
-    pub fn render(&self, rpass: &mut wgpu::RenderPass) {
+    pub fn reload_shader(&mut self) {
+        info!("Reloading voxel shader");
+        let voxel_shader = self.shader_hot_reload.get_shader("voxel.wgsl");
+        // Recreate pipeline with both formats
+        self.render_pipeline = Self::create_pipeline(
+            &self.device,
+            &self.pipeline_layout, // Use the stored layout
+            &voxel_shader,
+            wgpu::TextureFormat::Rgba32Float, // Main color format
+            wgpu::TextureFormat::R32Float,    // Custom depth format
+        );
+    }
+
+    /// Renders the voxel scene within a render pass, writing to color and custom depth views
+    pub fn render(
+        &self,
+        rpass: &mut wgpu::RenderPass,
+        // No need to pass views here, they are set in WgpuCtx::draw's begin_render_pass
+    ) {
         rpass.set_pipeline(&self.render_pipeline);
+        // Bind groups remain the same (camera @ 0 is set outside, textures @ 1, settings @ 2)
         rpass.set_bind_group(1, &self.texture_bind_group, &[]);
         rpass.set_bind_group(2, &self.voxel_settings_bind_group, &[]);
-        rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-        rpass.set_index_buffer(
-            self.vertex_index_buffer.slice(..),
-            wgpu::IndexFormat::Uint16,
-        );
-        rpass.draw_indexed(0..INDICES_SQUARE.len() as u32, 0, 0..1);
+
+        // Draw the fullscreen quad (using TriangleStrip with 4 vertices)
+        // No vertex/index buffer needed if generating in VS
+        rpass.draw(0..4, 0..1); // 4 vertices for TriangleStrip
+
+        // --- If using VERTICES_SQUARE/INDICES_SQUARE ---
+        // rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+        // rpass.set_index_buffer(
+        //     self.vertex_index_buffer.slice(..),
+        //     wgpu::IndexFormat::Uint16,
+        // );
+        // rpass.draw_indexed(0..INDICES_SQUARE.len() as u32, 0, 0..1);
+        // --- End If ---
     }
 
     /// Updates the voxel settings buffer when settings change
@@ -498,19 +533,5 @@ impl VoxelRenderer {
             0,
             bytemuck::cast_slice(&[self.voxel_settings]),
         );
-    }
-
-    /// Updates light direction based on time of day and sun incline
-    pub fn update_light_direction(&mut self) {
-        let time_angle = (self.time_of_day / 24.0) * 2.0 * std::f32::consts::PI;
-        let x = time_angle.cos();
-        let z = time_angle.sin();
-        let incline_angle = self.sun_incline * std::f32::consts::FRAC_PI_2;
-        let y = incline_angle.sin();
-        let horizontal_scale = incline_angle.cos();
-
-        self.voxel_settings.light_direction = [x * horizontal_scale, y, z * horizontal_scale, 0.0];
-
-        self.update_settings_buffer();
     }
 }
