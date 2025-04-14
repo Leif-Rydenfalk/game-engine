@@ -43,10 +43,11 @@ struct CameraUniform {
     view_proj: mat4x4<f32>,
     inv_view_proj: mat4x4<f32>,
     view: mat4x4<f32>,
-    camera_position: vec3f,
+    inv_view: mat4x4<f32>,
+    position: vec3<f32>,
     time: f32,
-    resolution: vec2f,
-    _padding: vec2f,
+    resolution: vec2<f32>,
+    _padding: vec2<f32>,
 };
 
 // Ray-sphere intersection

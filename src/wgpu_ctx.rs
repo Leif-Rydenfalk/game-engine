@@ -28,6 +28,7 @@ struct CameraUniform {
     view_proj: [[f32; 4]; 4],
     inv_view_proj: [[f32; 4]; 4],
     view: [[f32; 4]; 4],
+    inv_view: [[f32; 4]; 4],
     position: [f32; 3],
     time: f32,
     resolution: [f32; 2],
@@ -868,6 +869,7 @@ impl<'window> WgpuCtx<'window> {
         view_proj: Matrix4<f32>,
         inv_view_proj: Matrix4<f32>,
         view: Matrix4<f32>,
+        inv_view: Matrix4<f32>,
         position: [f32; 3],
     ) {
         // let jitter = Self::get_jitter_offset(
@@ -897,9 +899,12 @@ impl<'window> WgpuCtx<'window> {
         );
 
         let camera_uniform = CameraUniform {
-            view_proj: jittered_view_proj.into(), // Send CURRENT JITTERED VP
-            inv_view_proj: jittered_inv_view_proj.into(), // Send CURRENT JITTERED INV VP
+            // view_proj: jittered_view_proj.into(), // Send CURRENT JITTERED VP
+            // inv_view_proj: jittered_inv_view_proj.into(), // Send CURRENT JITTERED INV VP
+            view_proj: view_proj.into(),
+            inv_view_proj: inv_view_proj.into(),
             view: view.into(),
+            inv_view: inv_view.into(),
             position,
             time: self.time.elapsed().as_secs_f32(),
             resolution: [

@@ -172,11 +172,13 @@ impl<'window> ApplicationHandler for App<'window> {
                         let inv_view_proj = view_proj.invert().unwrap();
                         let view = calculate_view_matrix(&self.world, self.camera_entity.unwrap())
                             .unwrap();
+                        let inv_view = view.invert().unwrap();
 
                         wgpu_ctx.update_camera_uniform(
                             view_proj,
                             inv_view_proj,
                             view,
+                            inv_view,
                             position.into(),
                         );
                     }

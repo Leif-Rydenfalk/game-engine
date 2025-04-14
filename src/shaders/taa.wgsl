@@ -4,6 +4,7 @@ struct CameraUniform {
     view_proj: mat4x4<f32>,
     inv_view_proj: mat4x4<f32>,
     view: mat4x4<f32>,
+    inv_view: mat4x4<f32>,
     position: vec3<f32>,
     time: f32,
     resolution: vec2<f32>,
@@ -32,6 +33,8 @@ const TAA_BLEND_FACTOR_MIN: f32 = 0.7;
 const TAA_BLEND_FACTOR_MAX: f32 = 0.9;
 // const TAA_BLEND_FACTOR_MIN: f32 = 0.0;
 // const TAA_BLEND_FACTOR_MAX: f32 = 0.4;
+// const TAA_BLEND_FACTOR_MIN: f32 = 0.999;
+// const TAA_BLEND_FACTOR_MAX: f32 = 0.8;
 const MOTION_THRESHOLD: f32 = 0.5; 
 
 const BACKGROUND_DEPTH_THRESHOLD: f32 = 10000000.0; 
@@ -129,12 +132,12 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     // Assumes depth is in the red channel.
     let depth_value = textureLoad(depth_tex, pixel_coord, 0).r;
 
-    // Handle Background Pixels (where ray didn't hit anything)
-    // If depth is very large (or sentinel value), no valid history exists. Output current color.
-    if (depth_value >= BACKGROUND_DEPTH_THRESHOLD) {
-        textureStore(output_tex, pixel_coord, current_color);
-        return;
-    }
+    // // Handle Background Pixels (where ray didn't hit anything)
+    // // If depth is very large (or sentinel value), no valid history exists. Output current color.
+    // if (depth_value >= BACKGROUND_DEPTH_THRESHOLD) {
+    //     textureStore(output_tex, pixel_coord, current_color);
+    //     return;
+    // }
 
     // Reconstruct World Position from depth
     // !! CRITICAL STEP: Assumes depth_value is linear distance !!

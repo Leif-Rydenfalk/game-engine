@@ -46,10 +46,11 @@ struct CameraUniform {
     view_proj: mat4x4<f32>,
     inv_view_proj: mat4x4<f32>,
     view: mat4x4<f32>,
-    camera_position: vec3f,
+    inv_view: mat4x4<f32>,
+    position: vec3<f32>,
     time: f32,
-    resolution: vec2f,
-    _padding: vec2f
+    resolution: vec2<f32>,
+    _padding: vec2<f32>,
 };
 
 struct HitInfo {
@@ -85,7 +86,7 @@ fn triplanarLod(p: vec3f, n: vec3f, k: f32, tex_index: i32, lod: f32) -> vec3f {
 }
 
 fn map(p: vec3f) -> f32 {
-    var d: f32 = settings.max_dist;
+    var d: f32 = 100000000000000.0;
     let sc: f32 = 0.3;
     // Terrain generation remains the same
     let q: vec3f = sc * p / 32.0 - vec3f(0.003, -0.006, 0.0);
@@ -297,13 +298,13 @@ struct FragmentOutput {
 
 @fragment
 fn fs_main(input: VertexOutput) -> FragmentOutput {
-    let ro = camera.camera_position;
+    let ro = camera.position;
     var ndc = input.ndc;
     let world_pos = camera.inv_view_proj * ndc;
     let rd = normalize(world_pos.xyz / world_pos.w - ro);
     let sun_dir = normalize(settings.light_direction.xyz);
 
-    let hit = trace(ro, rd, settings.max_dist, settings.voxel_size);
+    let hit = trace(ro, rd, 100000000000000.0, settings.voxel_size);
     var col = vec3f(0.0); // Initialize color calculation variable
     var t = 100000000000000.0;       // Use local 't' for clarity
 
@@ -313,12 +314,6 @@ fn fs_main(input: VertexOutput) -> FragmentOutput {
         col = shade(pos, sun_dir, lod, hit);
         t = hit.t; // Assign the hit distance
     } 
-
-    // --- Apply fog (optional, applied before debug views) ---
-    let dist_factor = max(0.0, t - 20.0);
-    let fog_scale = 0.001;
-    let fog_amount = exp(-dist_factor * fog_scale);
-    col = mix(vec3f(0.4), col, fog_amount); // Mix towards white fog
 
     // --- Debug visualizations ---
     if settings.show_normals != 0 && hit.is_hit {
