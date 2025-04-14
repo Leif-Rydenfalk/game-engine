@@ -53,23 +53,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
     let depth = textureLoad(depth_texture, frag_coord, 0).r;
 
     // If depth is very large (meaning voxel ray missed), draw sky
-    if depth >= 10000.0 {
-        let ro = camera.camera_position;
-        let rd = normalize(input.world_pos - ro); // View direction
-
-        // Simple sky gradient: blue zenith, lighter blue/white horizon
-        let sky_color_zenith = vec3f(0.2, 0.4, 0.8);
-        let sky_color_horizon = vec3f(0.6, 0.7, 0.9);
-        let t = smoothstep(0.0, 0.6, rd.y); // Mix based on vertical component of view dir
-
-        // Add a simple sun
-        let sun_dir = normalize(vec3f(0.8, 0.6, 0.2)); // Example sun direction
-        let sun_dot = max(0.0, dot(rd, sun_dir));
-        let sun_color = vec3f(1.0, 0.9, 0.7) * pow(sun_dot, 64.0) * 2.0; // Sun disk + glow
-
-        let sky_color = mix(sky_color_horizon, sky_color_zenith, t) + sun_color;
-
-        return vec4f(sky_color, 1.0);
+    if depth >= 100000000.0 {
+        return vec4f(0.1, 0.2, 1.0, 1.0);
     } else {
         // Voxel terrain is here, discard this fragment so terrain shows through
         discard;

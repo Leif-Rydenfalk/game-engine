@@ -48,6 +48,8 @@ struct CameraUniform {
     view: mat4x4<f32>,
     camera_position: vec3f,
     time: f32,
+    resolution: vec2f,
+    _padding: vec2f
 };
 
 struct HitInfo {
@@ -301,14 +303,9 @@ fn fs_main(input: VertexOutput) -> FragmentOutput {
     let rd = normalize(world_pos.xyz / world_pos.w - ro);
     let sun_dir = normalize(settings.light_direction.xyz);
 
-    // --- Prepare output struct ---
-    var output: FragmentOutput;
-    output.color = vec4f(0.0, 0.0, 0.0, 1.0); // Default color
-    output.depth = 10000000000.0; // Default depth (far distance) if its this we know its probably sky
-
     let hit = trace(ro, rd, settings.max_dist, settings.voxel_size);
     var col = vec3f(0.0); // Initialize color calculation variable
-    var t = 10000000000.0;       // Use local 't' for clarity
+    var t = 100000000000000.0;       // Use local 't' for clarity
 
     if hit.is_hit {
         let pos = ro + rd * hit.t;
@@ -318,10 +315,10 @@ fn fs_main(input: VertexOutput) -> FragmentOutput {
     } 
 
     // --- Apply fog (optional, applied before debug views) ---
-    // let dist_factor = max(0.0, t - 50.0);
-    // let fog_scale = 0.0001;
-    // let fog_amount = exp(-dist_factor * fog_scale);
-    // col = mix(vec3f(1.0), col, fog_amount); // Mix towards white fog
+    let dist_factor = max(0.0, t - 50.0);
+    let fog_scale = 0.0001;
+    let fog_amount = exp(-dist_factor * fog_scale);
+    col = mix(vec3f(1.0), col, fog_amount); // Mix towards white fog
 
     // --- Debug visualizations ---
     if settings.show_normals != 0 && hit.is_hit {
@@ -337,6 +334,9 @@ fn fs_main(input: VertexOutput) -> FragmentOutput {
     col = ACESFilm(col);       
 
     // --- Assign final values to output struct ---
+    
+    // --- Prepare output struct ---
+    var output: FragmentOutput;
     output.color = vec4f(col, 1.0);
     output.depth = t; // Assign the calculated depth (hit distance or max_dist)
 

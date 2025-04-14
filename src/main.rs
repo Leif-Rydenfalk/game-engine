@@ -26,6 +26,9 @@ pub use input::*;
 mod imgui_state;
 pub use imgui_state::*;
 
+mod shader;
+pub use shader::*;
+
 mod wgpu_ctx;
 pub use wgpu_ctx::*;
 

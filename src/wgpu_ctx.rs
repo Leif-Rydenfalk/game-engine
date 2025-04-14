@@ -1,6 +1,6 @@
 use crate::{
     BloomEffect, Camera, ColorCorrectionEffect, ColorCorrectionUniform, ImguiState, Model,
-    SkyRenderer, Transform, VoxelRenderer,
+    ShaderHotReload, SkyRenderer, Transform, VoxelRenderer,
 };
 use cgmath::{Matrix4, Point3, SquareMatrix};
 use hecs::World;
@@ -20,143 +20,6 @@ use imgui_winit_support::WinitPlatform;
 
 use tracing::{debug, error, info, trace, warn};
 
-// --- ShaderHotReload implementation ---
-pub struct ShaderHotReload {
-    device: Arc<wgpu::Device>,
-    shader_dir: PathBuf,
-    modules: Mutex<HashMap<String, (wgpu::ShaderModule, SystemTime)>>,
-    last_check: Mutex<SystemTime>,
-}
-
-impl ShaderHotReload {
-    pub fn new(device: Arc<wgpu::Device>, shader_dir: impl AsRef<Path>) -> Self {
-        Self {
-            device,
-            shader_dir: shader_dir.as_ref().to_path_buf(),
-            modules: Mutex::new(HashMap::new()),
-            last_check: Mutex::new(SystemTime::now()),
-        }
-    }
-
-    pub fn get_shader(&self, name: &str) -> wgpu::ShaderModule {
-        let mut modules = self.modules.lock().unwrap();
-        let path = self.shader_dir.join(name);
-
-        // Try to get modification time, if file doesn't exist or has other issues,
-        // fallback to embedded shader
-        let metadata = match fs::metadata(&path) {
-            Ok(meta) => meta,
-            Err(e) => {
-                info!(
-                    "Warning: Couldn't read shader file {}: {}",
-                    path.display(),
-                    e
-                );
-                // Return embedded fallback shader
-                return self.create_fallback_shader(name);
-            }
-        };
-
-        let modified = match metadata.modified() {
-            Ok(time) => time,
-            Err(e) => {
-                info!(
-                    "Warning: Couldn't get modification time for {}: {}",
-                    path.display(),
-                    e
-                );
-                // Return embedded fallback shader
-                return self.create_fallback_shader(name);
-            }
-        };
-
-        if let Some((module, last_modified)) = modules.get(name) {
-            if *last_modified >= modified {
-                return module.clone();
-            }
-        }
-
-        // Load shader from file
-        let source = match fs::read_to_string(&path) {
-            Ok(content) => content,
-            Err(e) => {
-                info!(
-                    "Warning: Failed to read shader file {}: {}",
-                    path.display(),
-                    e
-                );
-                // Return embedded fallback shader
-                return self.create_fallback_shader(name);
-            }
-        };
-
-        let shader_module = self
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some(name),
-                source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Owned(source)),
-            });
-
-        modules.insert(name.to_string(), (shader_module.clone(), modified));
-        info!("Loaded shader: {}", name);
-
-        shader_module
-    }
-
-    fn create_fallback_shader(&self, name: &str) -> wgpu::ShaderModule {
-        // For simplicity, we're using empty shaders as fallbacks
-        // In a real implementation, you would embed the shaders here
-        let fallback_source = match name {
-            "bloom.wgsl" => include_str!("shaders/bloom.wgsl"),
-            "color_correction.wgsl" => include_str!("shaders/color_correction.wgsl"),
-            "final_conversion.wgsl" => include_str!("shaders/final_conversion.wgsl"),
-            "atmosphere.wgsl" => include_str!("shaders/atmosphere.wgsl"),
-            "voxel.wgsl" => include_str!("shaders/voxel.wgsl"),
-            _ => {
-                info!("Unknown shader: {}, using empty fallback", name);
-                "// Empty fallback shader\n@vertex fn vs_main() -> @builtin(position) vec4<f32> { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }\n@fragment fn fs_main() -> @location(0) vec4<f32> { return vec4<f32>(1.0, 0.0, 1.0, 1.0); }"
-            }
-        };
-
-        self.device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some(&format!("{}_fallback", name)),
-                source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(fallback_source)),
-            })
-    }
-
-    pub fn check_for_updates(&self) -> Vec<String> {
-        let mut last_check = self.last_check.lock().unwrap();
-        let now = SystemTime::now();
-        let mut updated_shaders = Vec::new();
-
-        // Only check every 1 second to avoid excessive file reads
-        if now
-            .duration_since(*last_check)
-            .unwrap_or(Duration::from_secs(0))
-            < Duration::from_secs(1)
-        {
-            return updated_shaders;
-        }
-
-        *last_check = now;
-        let modules = self.modules.lock().unwrap();
-
-        for (name, (_, last_modified)) in modules.iter() {
-            let path = self.shader_dir.join(name);
-            if let Ok(metadata) = fs::metadata(&path) {
-                if let Ok(modified) = metadata.modified() {
-                    if modified > *last_modified {
-                        updated_shaders.push(name.clone());
-                    }
-                }
-            }
-        }
-
-        updated_shaders
-    }
-}
-
 // --- CameraUniform Struct ---
 #[repr(C)]
 #[derive(Default, Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
@@ -168,6 +31,18 @@ struct CameraUniform {
     time: f32,
     resolution: [f32; 2],
     _padding: [f32; 2],
+}
+
+// Need access to previous camera state for motion vectors
+#[repr(C)]
+#[derive(Default, Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct TAACameraUniform {
+    // For motion calculation
+    prev_view_proj: [[f32; 4]; 4],
+    prev_inv_view_proj: [[f32; 4]; 4],
+    // Jitter offset for the current frame
+    jitter_offset: [f32; 2],
+    _padding: [f32; 2], // Adjust padding if needed
 }
 
 // --- WgpuCtx Struct ---
@@ -185,6 +60,9 @@ pub struct WgpuCtx<'window> {
     camera_buffer: wgpu::Buffer,
     camera_bind_group_layout: wgpu::BindGroupLayout,
     camera_bind_group: wgpu::BindGroup,
+    taa_camera_buffer: wgpu::Buffer,
+    taa_camera_bind_group_layout: wgpu::BindGroupLayout,
+    taa_camera_bind_group: wgpu::BindGroup,
 
     // Rendering resources
     models: Vec<Model>,
@@ -202,6 +80,20 @@ pub struct WgpuCtx<'window> {
     post_process_texture: wgpu::Texture, // Rgba32Float for bloom intermediate/output
     post_process_texture_view: wgpu::TextureView,
     color_correction_effect: ColorCorrectionEffect,
+
+    // --- TAA Resources ---
+    history_textures: [wgpu::Texture; 2], // Ping-pong history buffers (HDR)
+    history_texture_views: [wgpu::TextureView; 2],
+    taa_pipeline_layout: wgpu::PipelineLayout,
+    taa_resolve_bind_group_layout: wgpu::BindGroupLayout, // Binds current frame, history, depth, etc.
+    taa_resolve_bind_groups: [wgpu::BindGroup; 2],        // Ping-pong bind groups
+    taa_resolve_pipeline: wgpu::ComputePipeline,          // TAA is often done in Compute
+
+    // --- TAA State ---
+    frame_index: u64,                 // To drive jitter pattern
+    needs_history_reset: bool,        // Flag to clear history (e.g., after resize/teleport)
+    prev_view_proj: Matrix4<f32>,     // Store previous frame's matrices for motion vectors
+    prev_inv_view_proj: Matrix4<f32>, // Store previous frame's matrices for motion vectors
 
     // Final rendering resources (simplified conversion)
     final_render_pipeline: wgpu::RenderPipeline,
@@ -236,8 +128,127 @@ impl<'window> WgpuCtx<'window> {
         ));
 
         // Create camera resources
-        let (camera_buffer, camera_bind_group_layout, camera_bind_group) =
-            Self::create_camera_resources(&device);
+        let (
+            camera_buffer,
+            camera_bind_group_layout,
+            camera_bind_group,
+            taa_camera_buffer,
+            taa_camera_bind_group_layout,
+            taa_camera_bind_group,
+        ) = Self::create_camera_resources(&device);
+
+        // --- Create TAA History Textures (HDR, same format/size as render_texture) ---
+        let history_texture_desc = wgpu::TextureDescriptor {
+            label: Some("TAA History Texture"),
+            size: wgpu::Extent3d {
+                width: surface_config.width,
+                height: surface_config.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba32Float, // Match render_texture
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::COPY_DST, // STORAGE for compute, COPY_DST for reset
+            view_formats: &[],
+        };
+        let history_textures = [
+            device.create_texture(&history_texture_desc),
+            device.create_texture(&history_texture_desc),
+        ];
+        let history_texture_views = [
+            history_textures[0].create_view(&wgpu::TextureViewDescriptor::default()),
+            history_textures[1].create_view(&wgpu::TextureViewDescriptor::default()),
+        ];
+
+        // --- Create TAA Resolve Bind Group Layout ---
+        // This layout defines what the TAA shader needs access to
+        let taa_resolve_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("TAA Resolve Bind Group Layout"),
+                entries: &[
+                    // Input: Current Frame's Rendered Scene (HDR)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    // Input: Previous Frame's TAA Result (History)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    // Input: Custom Depth Texture (for motion vectors)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            // R32Float is non-filterable, use UnfilterableFloat
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    // Sampler for Input/History (Linear)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                    // Output: Current Frame's TAA Result (Write Target)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::COMPUTE, // Only COMPUTE needs storage texture write
+                        ty: wgpu::BindingType::StorageTexture {
+                            access: wgpu::StorageTextureAccess::WriteOnly,
+                            format: wgpu::TextureFormat::Rgba32Float,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+
+        // --- Create TAA Compute Pipeline ---
+        let taa_shader = shader_hot_reload.get_shader("taa.wgsl");
+        let taa_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("TAA Resolve Pipeline Layout"),
+            bind_group_layouts: &[
+                &taa_camera_bind_group_layout,
+                &taa_resolve_bind_group_layout,
+            ], // Needs camera uniforms too
+            push_constant_ranges: &[],
+        });
+        let taa_resolve_pipeline =
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("TAA Resolve Compute Pipeline"),
+                layout: Some(&taa_pipeline_layout),
+                module: &taa_shader,
+                entry_point: Some("main"), // Compute shader entry point
+                compilation_options: Default::default(),
+                cache: None,
+            });
+
+        // --- Initialize TAA state ---
+        let frame_index = 0;
+        let needs_history_reset = true; // Start needing a reset
+        let prev_view_proj = Matrix4::identity();
+        let prev_inv_view_proj = Matrix4::identity();
 
         // --- Create render targets ---
         // Custom depth texture (R32Float)
@@ -298,24 +309,6 @@ impl<'window> WgpuCtx<'window> {
             Some(&color_correction_shader),
         );
 
-        // Create final texture bind group (binds render_texture for display)
-        let final_texture_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &render_texture_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    // This should bind the *final* result before UI, which might be render_texture or post_process_texture
-                    // Let's assume post-processing ends up in render_texture
-                    resource: wgpu::BindingResource::TextureView(&render_texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
-                },
-            ],
-            label: Some("final_texture_bind_group"),
-        });
-
         let final_shader = shader_hot_reload.get_shader("final_conversion.wgsl");
         let (final_render_pipeline, final_vertex_buffer) =
             Self::create_final_render_pipeline_with_shader(
@@ -348,6 +341,83 @@ impl<'window> WgpuCtx<'window> {
         // Initialize ImGui
         let imgui = Self::init_imgui(&device, &queue, &window, surface_config.format);
 
+        // --- (!!) Update `final_texture_bind_group` creation ---
+        // It should now point to one of the TAA history textures initially.
+        // We'll update which one it points to each frame *after* TAA runs.
+        let final_texture_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &render_texture_bind_group_layout, // Using the simple layout for final pass
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    // Initially bind the first history view, will be updated in draw()
+                    resource: wgpu::BindingResource::TextureView(&history_texture_views[0]),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+            label: Some("final_texture_bind_group"),
+        });
+
+        // --- Create the specific TAA bind groups now that views exist ---
+        let taa_resolve_bind_groups = [
+            // Bind Group 0: Reads History 0, Writes History 1
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("TAA Bind Group 0 (R:H0, W:H1)"),
+                layout: &taa_resolve_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&render_texture_view),
+                    }, // Current Scene Input
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&history_texture_views[0]),
+                    }, // History Read Input
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(&voxel_depth_texture_view),
+                    }, // Depth Input
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::Sampler(&sampler),
+                    }, // Sampler
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::TextureView(&history_texture_views[1]),
+                    }, // History Write Output
+                ],
+            }),
+            // Bind Group 1: Reads History 1, Writes History 0
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("TAA Bind Group 1 (R:H1, W:H0)"),
+                layout: &taa_resolve_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&render_texture_view),
+                    }, // Current Scene Input
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&history_texture_views[1]),
+                    }, // History Read Input
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(&voxel_depth_texture_view),
+                    }, // Depth Input
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::Sampler(&sampler),
+                    }, // Sampler
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::TextureView(&history_texture_views[0]),
+                    }, // History Write Output
+                ],
+            }),
+        ];
+
         Self {
             surface,
             surface_config,
@@ -371,6 +441,19 @@ impl<'window> WgpuCtx<'window> {
             color_correction_effect,
             final_render_pipeline,
             final_vertex_buffer,
+            history_textures,
+            history_texture_views,
+            taa_camera_buffer,
+            taa_camera_bind_group,
+            taa_camera_bind_group_layout,
+            taa_resolve_bind_group_layout,
+            taa_resolve_bind_groups,
+            taa_pipeline_layout,
+            taa_resolve_pipeline,
+            frame_index,
+            needs_history_reset,
+            prev_view_proj,
+            prev_inv_view_proj,
             final_texture_bind_group,
             time: Instant::now(),
             hidpi_factor: window.scale_factor(),
@@ -431,14 +514,21 @@ impl<'window> WgpuCtx<'window> {
     /// Create camera uniform buffer and bind group
     fn create_camera_resources(
         device: &wgpu::Device,
-    ) -> (wgpu::Buffer, wgpu::BindGroupLayout, wgpu::BindGroup) {
+    ) -> (
+        wgpu::Buffer,
+        wgpu::BindGroupLayout,
+        wgpu::BindGroup,
+        wgpu::Buffer,
+        wgpu::BindGroupLayout,
+        wgpu::BindGroup,
+    ) {
         let camera_uniform = CameraUniform {
             view_proj: Matrix4::identity().into(),
             ..Default::default()
         };
 
         let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Camera Buffer"),
+            label: Some("camera_buffer"),
             contents: bytemuck::cast_slice(&[camera_uniform]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -469,32 +559,71 @@ impl<'window> WgpuCtx<'window> {
             label: Some("camera_bind_group"),
         });
 
-        (camera_buffer, camera_bind_group_layout, camera_bind_group)
-    }
+        let taa_camera_uniform = TAACameraUniform {
+            prev_view_proj: Matrix4::identity().into(),
+            ..Default::default()
+        };
 
-    /// Creates a depth texture for depth testing
-    fn create_depth_texture(
-        device: &wgpu::Device,
-        config: &wgpu::SurfaceConfiguration,
-    ) -> (wgpu::Texture, wgpu::TextureView) {
-        let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Depth Texture"),
-            size: wgpu::Extent3d {
-                width: config.width,
-                height: config.height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Depth32Float,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
+        let taa_camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("taa_cameara_buffer"),
+            contents: bytemuck::cast_slice(&[taa_camera_uniform]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        let depth_texture_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let taa_camera_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX
+                            | wgpu::ShaderStages::FRAGMENT
+                            | wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::VERTEX
+                            | wgpu::ShaderStages::FRAGMENT
+                            | wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+                label: Some("taa_camera_bind_group_layout"),
+            });
 
-        (depth_texture, depth_texture_view)
+        let taa_camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &taa_camera_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: camera_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: taa_camera_buffer.as_entire_binding(),
+                },
+            ],
+            label: Some("taa_camera_bind_group"),
+        });
+
+        (
+            camera_buffer,
+            camera_bind_group_layout,
+            camera_bind_group,
+            taa_camera_buffer,
+            taa_camera_bind_group_layout,
+            taa_camera_bind_group,
+        )
     }
 
     /// Creates a color texture with the specified format
@@ -697,6 +826,37 @@ impl<'window> WgpuCtx<'window> {
         }
     }
 
+    // Add a helper function, perhaps in a camera module or within WgpuCtx
+    fn get_jitter_offset(frame_index: u64, width: u32, height: u32) -> [f32; 2] {
+        // Use a Halton sequence or similar low-discrepancy sequence for sub-pixel offsets
+        // Example using Halton(2, 3) - need a proper implementation
+        fn halton(index: u64, base: u64) -> f32 {
+            let mut result = 0.0;
+            let mut f = 1.0 / base as f32;
+            let mut i = index;
+            while i > 0 {
+                result += f * (i % base) as f32;
+                i /= base;
+                f /= base as f32;
+            }
+            result
+        }
+
+        // Sequence length, e.g., 8 or 16 frames
+        const JITTER_SEQUENCE_LENGTH: u64 = 8;
+        let index_in_sequence = frame_index % JITTER_SEQUENCE_LENGTH;
+
+        // Generate offset in range [-0.5, 0.5] pixels
+        let x = halton(index_in_sequence + 1, 2) - 0.5; // Start index > 0 for Halton
+        let y = halton(index_in_sequence + 1, 3) - 0.5;
+
+        // Convert pixel offset to clip space offset (NDC)
+        [
+            x * (2.0 / width as f32),
+            y * (2.0 / height as f32), // Y might need negation depending on NDC convention
+        ]
+    }
+
     /// Updates the camera uniform buffer
     pub fn update_camera_uniform(
         &mut self,
@@ -705,8 +865,33 @@ impl<'window> WgpuCtx<'window> {
         view: Matrix4<f32>,
         position: [f32; 3],
     ) {
+        // --- TAA Jitter ---
+        let jitter = Self::get_jitter_offset(
+            self.frame_index,
+            self.surface_config.width,
+            self.surface_config.height,
+        );
+
+        let jitter_matrix =
+            Matrix4::from_translation(cgmath::Vector3::new(jitter[0], jitter[1], 0.0));
+        let jittered_view_proj = jitter_matrix * view_proj; // Apply jitter *after* projection
+                                                            // --- End TAA Jitter ---
+
+        let taa_camera_uniform = TAACameraUniform {
+            prev_view_proj: self.prev_view_proj.into(), // Send previous frame's VP
+            prev_inv_view_proj: self.prev_inv_view_proj.into(), // Send previous frame's inverse VP
+            jitter_offset: jitter, // Send current jitter (optional, might not be needed if VP is jittered)
+            _padding: [0.0; 2],    // Adjust as needed
+        };
+
+        self.queue.write_buffer(
+            &self.taa_camera_buffer,
+            0,
+            bytemuck::cast_slice(&[taa_camera_uniform]),
+        );
+
         let camera_uniform = CameraUniform {
-            view_proj: view_proj.into(),
+            view_proj: jittered_view_proj.into(),
             inv_view_proj: inv_view_proj.into(),
             view: view.into(),
             position,
@@ -723,6 +908,10 @@ impl<'window> WgpuCtx<'window> {
             0,
             bytemuck::cast_slice(&[camera_uniform]),
         );
+
+        // --- Store previous matrices for NEXT frame ---
+        self.prev_view_proj = view_proj; // Store the UNJITTERED VP
+        self.prev_inv_view_proj = inv_view_proj; // Store the UNJITTERED inverse
     }
 
     /// Resizes rendering surfaces
@@ -780,6 +969,122 @@ impl<'window> WgpuCtx<'window> {
             label: Some("final_texture_bind_group"),
         });
 
+        // --- Recreate TAA History Textures ---
+        let history_texture_desc = wgpu::TextureDescriptor {
+            label: Some("TAA History Texture"),
+            size: wgpu::Extent3d {
+                width: self.surface_config.width,
+                height: self.surface_config.height,
+                depth_or_array_layers: 1,
+            },
+            format: wgpu::TextureFormat::Rgba32Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::COPY_DST, // Add COPY_DST if clearing/copying
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            view_formats: &[],
+        };
+        self.history_textures = [
+            self.device.create_texture(&history_texture_desc),
+            self.device.create_texture(&history_texture_desc),
+        ];
+        self.history_texture_views = [
+            self.history_textures[0].create_view(&wgpu::TextureViewDescriptor::default()),
+            self.history_textures[1].create_view(&wgpu::TextureViewDescriptor::default()),
+        ];
+
+        // --- Recreate TAA Bind Groups ---
+        self.taa_resolve_bind_groups = [
+            // Bind Group 0: Reads History 0, Writes History 1
+            self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("TAA Bind Group 0 (R:H0, W:H1)"),
+                layout: &self.taa_resolve_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&self.render_texture_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(
+                            &self.history_texture_views[0],
+                        ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(
+                            &self.voxel_depth_texture_view,
+                        ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::TextureView(
+                            &self.history_texture_views[1],
+                        ),
+                    },
+                ],
+            }),
+            // Bind Group 1: Reads History 1, Writes History 0
+            self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("TAA Bind Group 1 (R:H1, W:H0)"),
+                layout: &self.taa_resolve_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&self.render_texture_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(
+                            &self.history_texture_views[1],
+                        ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(
+                            &self.voxel_depth_texture_view,
+                        ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::TextureView(
+                            &self.history_texture_views[0],
+                        ),
+                    },
+                ],
+            }),
+        ];
+
+        // --- Recreate Final Bind Group (references initial history view) ---
+        self.final_texture_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &self.render_texture_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    // Reset to bind view 0 initially after resize
+                    resource: wgpu::BindingResource::TextureView(&self.history_texture_views[0]),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+            ],
+            label: Some("final_texture_bind_group (resized)"),
+        });
+
+        // --- Trigger History Reset ---
+        self.needs_history_reset = true;
+
         // Update post-processing effects
         self.bloom_effect.resize(
             self.surface_config.width,
@@ -801,38 +1106,71 @@ impl<'window> WgpuCtx<'window> {
     pub fn check_shader_updates(&mut self) {
         let updated_shaders = self.shader_hot_reload.check_for_updates();
         let mut sky_needs_update = false; // Flag specifically for sky
+        let mut taa_needs_update = false; // <--- ADD Flag for TAA
 
         for shader_name in &updated_shaders {
             match shader_name.as_str() {
                 "bloom.wgsl" => {
-                    // ... (reload bloom) ...
-                    info!("Reloaded bloom shader");
+                    // TODO: Reload Bloom pipeline if needed
                 }
                 "color_correction.wgsl" => {
-                    // ... (reload color correction) ...
-                    info!("Reloaded color correction shader");
+                    // TODO: Reload Color Correction pipeline if needed
                 }
                 "final_conversion.wgsl" => {
-                    // ... (reload final conversion) ...
-                    info!("Reloaded final conversion shader");
+                    // TODO: Reload Final Conversion pipeline if needed (less common unless logic changes)
+                    let final_shader = self.shader_hot_reload.get_shader("final_conversion.wgsl");
+                    let (final_render_pipeline, _) = // Recreate using existing vertex buffer
+                        Self::create_final_render_pipeline_with_shader(
+                            &self.device,
+                            &self.render_texture_bind_group_layout, // Assuming this layout doesn't change
+                            self.surface_config.format,
+                            &final_shader,
+                        );
+                    self.final_render_pipeline = final_render_pipeline;
+                    info!("Reloaded final_conversion.wgsl shader and pipeline.");
                 }
                 "sky.wgsl" => {
-                    // <--- Check for sky shader
                     sky_needs_update = true;
-                    // Don't reload here, do it below after VoxelRenderer check
                 }
-                _ => {}
+                "taa.wgsl" => {
+                    // <--- ADD Case for TAA
+                    taa_needs_update = true;
+                }
+                _ => {
+                    // Ignore other files or handle voxel shaders internally in VoxelRenderer
+                }
             }
         }
 
         // Check for voxel shader updates in the VoxelRenderer
         self.voxel_renderer.check_shader_updates();
 
-        // Now reload sky shader if needed
+        // Reload sky shader if needed
         if sky_needs_update {
             self.sky_renderer
                 .check_shader_updates(wgpu::TextureFormat::Rgba32Float); // Pass output format
+            info!("Reloaded sky.wgsl shader and pipeline.");
         }
+
+        // --- (!!) Reload TAA shader if needed ---
+        if taa_needs_update {
+            let taa_shader = self.shader_hot_reload.get_shader("taa.wgsl");
+            self.taa_resolve_pipeline =
+                self.device
+                    .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                        label: Some("TAA Resolve Compute Pipeline (Reloaded)"),
+                        layout: Some(&self.taa_pipeline_layout), // Use stored layout
+                        module: &taa_shader,                     // Use reloaded shader
+                        entry_point: Some("main"),
+                        compilation_options: Default::default(),
+                        cache: None, // Consider using pipeline cache if beneficial
+                    });
+            info!("Reloaded taa.wgsl shader and compute pipeline.");
+            // When TAA shader changes, it's often safest to reset history
+            // as the algorithm might behave differently.
+            self.needs_history_reset = true;
+        }
+        // --- End TAA Reload ---
     }
 
     /// Renders the scene
@@ -854,7 +1192,7 @@ impl<'window> WgpuCtx<'window> {
                 label: Some("Main Encoder"),
             });
 
-        // --- Pass 1: Voxel Rendering ---
+        // --- Voxel Rendering ---
         {
             let mut voxel_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Voxel Render Pass"),
@@ -901,7 +1239,7 @@ impl<'window> WgpuCtx<'window> {
             self.voxel_renderer.render(&mut voxel_pass);
         } // End Voxel Render Pass Scope
 
-        // --- Pass 2: Sky Rendering ---
+        // --- Sky Rendering ---
         {
             // Now voxel_depth_texture is finished being written to and can be read.
             // This pass only targets the color buffer.
@@ -943,31 +1281,150 @@ impl<'window> WgpuCtx<'window> {
         // Apply Color Correction (reads render_texture, writes to post_process_texture - adjust as needed)
         // self.color_correction_effect.apply(&mut encoder, &self.post_process_texture_view); // Source = render_texture? Target = post_process?
 
-        // --- Final Render Pass ---
-        // Renders the result of scene + sky + post-processing (assumed to be in render_texture_view)
-        // to the swapchain texture (surface_texture_view) using a simple conversion shader.
+        // --- TAA History Reset (if needed) ---
+        if self.needs_history_reset {
+            // Option 1: Clear texture (might require COPY_DST usage)
+            // encoder.clear_texture(&self.history_textures[0], &wgpu::ImageSubresourceRange{..});
+            // encoder.clear_texture(&self.history_textures[1], &wgpu::ImageSubresourceRange{..});
+
+            // Option 2: Copy the current frame into both history buffers
+            // This provides a valid starting point immediately.
+            let current_history_write_index = (self.frame_index % 2) as usize;
+            let next_history_write_index = ((self.frame_index + 1) % 2) as usize;
+            encoder.copy_texture_to_texture(
+                self.render_texture.as_image_copy(), // Source: Current render
+                self.history_textures[current_history_write_index].as_image_copy(), // Dest: Current history write target
+                wgpu::Extent3d {
+                    width: self.surface_config.width,
+                    height: self.surface_config.height,
+                    depth_or_array_layers: 1,
+                },
+            );
+            encoder.copy_texture_to_texture(
+                self.render_texture.as_image_copy(), // Source: Current render
+                self.history_textures[next_history_write_index].as_image_copy(), // Dest: Next history write target (will be read next frame)
+                wgpu::Extent3d {
+                    width: self.surface_config.width,
+                    height: self.surface_config.height,
+                    depth_or_array_layers: 1,
+                },
+            );
+            self.needs_history_reset = false;
+            info!("TAA history reset.");
+        }
+
+        // --- TAA Resolve (Compute Pass) ---
+        {
+            let read_history_index = ((self.frame_index + 1) % 2) as usize; // History texture that was WRITTEN last frame
+            let write_history_index = (self.frame_index % 2) as usize; // History texture to WRITE this frame
+
+            let mut taa_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("TAA Resolve Pass"),
+                timestamp_writes: None,
+            });
+            taa_pass.set_pipeline(&self.taa_resolve_pipeline);
+            taa_pass.set_bind_group(0, &self.taa_camera_bind_group, &[]); // Camera uniforms (incl. prev matrices)
+            taa_pass.set_bind_group(1, &self.taa_resolve_bind_groups[write_history_index], &[]); // Use the group that reads correct history and writes to correct target
+
+            // Dispatch compute shaders
+            let workgroup_size_x = 8; // Match shader's workgroup size
+            let workgroup_size_y = 8;
+            let num_workgroups_x =
+                (self.surface_config.width + workgroup_size_x - 1) / workgroup_size_x;
+            let num_workgroups_y =
+                (self.surface_config.height + workgroup_size_y - 1) / workgroup_size_y;
+            taa_pass.dispatch_workgroups(num_workgroups_x, num_workgroups_y, 1);
+
+            // --- Update Final Texture Bind Group to point to the *result* of TAA ---
+            // This MUST be done *after* dispatching but conceptually "linked" to this pass
+            // It needs to know which texture view the compute shader just wrote to.
+            // Determine the ACTUAL index that was written to based on the bind group used
+            let actual_output_texture_index = if write_history_index == 0 { 1 } else { 0 }; // BG0 writes H1, BG1 writes H0
+            let taa_output_view = &self.history_texture_views[actual_output_texture_index];
+
+            self.final_texture_bind_group =
+                self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    layout: &self.render_texture_bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(taa_output_view), // Bind the texture TAA just wrote to
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(&self.sampler),
+                        },
+                    ],
+                    label: Some("final_texture_bind_group (updated after TAA dispatch)"),
+                });
+        } // End TAA Compute Pass Scope
+
+        // --- Update Final Texture Bind Group to point to the *result* of TAA ---
+        let taa_output_view = &self.history_texture_views[(self.frame_index % 2) as usize];
+        self.final_texture_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &self.render_texture_bind_group_layout, // Final pass uses simple layout
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(taa_output_view), // Bind the texture TAA just wrote to
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler), // Use the appropriate sampler
+                },
+            ],
+            label: Some("final_texture_bind_group (updated)"),
+        });
+
+        // --- Final Render Pass (Tonemapping, Gamma Correction) ---
+        // Input is now the TAA result (one of the history buffers)
         {
             let mut final_render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Final Conversion Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &surface_texture_view, // Target: Swapchain
-                    resolve_target: None,
+                    // ... ops: LoadOp::Load (or Clear if nothing else drawn before) ...
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load, // Don't clear if post-processing happened
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                         store: wgpu::StoreOp::Store,
                     },
+                    resolve_target: None,
                 })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
+                ..Default::default()
             });
 
             final_render_pass.set_pipeline(&self.final_render_pipeline);
-            // Ensure final_texture_bind_group binds the correct texture (render_texture_view or post_process_texture_view)
+            // Bind the *correctly updated* final_texture_bind_group containing the TAA result
             final_render_pass.set_bind_group(0, &self.final_texture_bind_group, &[]);
             final_render_pass.set_vertex_buffer(0, self.final_vertex_buffer.slice(..));
             final_render_pass.draw(0..6, 0..1); // Draw fullscreen quad
         }
+
+        // // --- Final Render Pass ---
+        // // Renders the result of scene + sky + post-processing (assumed to be in render_texture_view)
+        // // to the swapchain texture (surface_texture_view) using a simple conversion shader.
+        // {
+        //     let mut final_render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        //         label: Some("Final Conversion Pass"),
+        //         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+        //             view: &surface_texture_view, // Target: Swapchain
+        //             resolve_target: None,
+        //             ops: wgpu::Operations {
+        //                 load: wgpu::LoadOp::Load, // Don't clear if post-processing happened
+        //                 store: wgpu::StoreOp::Store,
+        //             },
+        //         })],
+        //         depth_stencil_attachment: None,
+        //         timestamp_writes: None,
+        //         occlusion_query_set: None,
+        //     });
+
+        //     final_render_pass.set_pipeline(&self.final_render_pipeline);
+        //     // Ensure final_texture_bind_group binds the correct texture (render_texture_view or post_process_texture_view)
+        //     final_render_pass.set_bind_group(0, &self.final_texture_bind_group, &[]);
+        //     final_render_pass.set_vertex_buffer(0, self.final_vertex_buffer.slice(..));
+        //     final_render_pass.draw(0..6, 0..1); // Draw fullscreen quad
+        // }
 
         // --- Render ImGui ---
         // Renders ImGui onto the swapchain texture *after* the final scene render.
@@ -976,6 +1433,9 @@ impl<'window> WgpuCtx<'window> {
         // --- Submit ---
         self.queue.submit(Some(encoder.finish()));
         surface_texture.present();
+
+        // Increment frame index for next frame's jitter and TAA ping-pong
+        self.frame_index += 1; // Crucial!
     }
 
     /// Update and render ImGui UI
