@@ -1,20 +1,18 @@
 // src/sky_renderer.rs
-use crate::{Settings, StaticTextures}; // Assuming Settings is accessible
+use crate::{Settings, ShaderHotReload, StaticTextures}; // Added ShaderHotReload
 use std::sync::Arc;
 use tracing::info;
 use wgpu::util::DeviceExt;
-
-use crate::ShaderHotReload; // Use the alias if needed
 
 pub struct SkyRenderer {
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
     pub render_pipeline: wgpu::RenderPipeline,
-    pipeline_layout: wgpu::PipelineLayout,
-    shader_hot_reload: Arc<ShaderHotReload>, // To reload sky shader
+    pipeline_layout: wgpu::PipelineLayout, // <-- Store the layout
+    shader_hot_reload: Arc<ShaderHotReload>, // <-- Store the hot reloader
     depth_texture_bind_group_layout: wgpu::BindGroupLayout,
     depth_sampler: Arc<wgpu::Sampler>,
-    pub depth_texture_bind_group: Option<wgpu::BindGroup>, // Option<> because view changes on resize
+    pub depth_texture_bind_group: Option<wgpu::BindGroup>,
     static_textures: Arc<StaticTextures>,
 }
 
@@ -23,9 +21,9 @@ impl SkyRenderer {
         device: Arc<wgpu::Device>,
         queue: Arc<wgpu::Queue>,
         camera_bind_group_layout: &wgpu::BindGroupLayout, // Group 0
-        shader_hot_reload: Arc<ShaderHotReload>,
+        shader_hot_reload: Arc<ShaderHotReload>,          // <-- Add parameter
         output_format: wgpu::TextureFormat,
-        static_textures: Arc<StaticTextures>, // <-- Add parameter (Group 2)
+        static_textures: Arc<StaticTextures>, // Group 2
     ) -> Self {
         // Layout for binding the custom depth texture (R32Float) and a sampler (Group 1)
         let depth_texture_bind_group_layout =
@@ -43,7 +41,7 @@ impl SkyRenderer {
                         },
                         count: None,
                     },
-                    // Sampler (required even for textureLoad sometimes)
+                    // Sampler
                     wgpu::BindGroupLayoutEntry {
                         binding: 1,
                         visibility: wgpu::ShaderStages::FRAGMENT,
@@ -70,12 +68,14 @@ impl SkyRenderer {
             bind_group_layouts: &[
                 camera_bind_group_layout,                   // Group 0
                 &depth_texture_bind_group_layout,           // Group 1
-                &static_textures.texture_bind_group_layout, // Group 2 <-- Use layout from static_textures
+                &static_textures.texture_bind_group_layout, // Group 2
             ],
             push_constant_ranges: &[],
         });
 
+        // --- Use ShaderHotReload to get the shader ---
         let sky_shader = shader_hot_reload.get_shader("sky.wgsl");
+        // -------------------------------------------
 
         let render_pipeline =
             Self::create_pipeline(&device, &pipeline_layout, &sky_shader, output_format);
@@ -84,12 +84,12 @@ impl SkyRenderer {
             device,
             queue,
             render_pipeline,
-            pipeline_layout,
-            shader_hot_reload,
+            pipeline_layout,   // <-- Store layout
+            shader_hot_reload, // <-- Store hot reloader
             depth_texture_bind_group_layout,
             depth_sampler,
             depth_texture_bind_group: None,
-            static_textures, // <-- Store the Arc
+            static_textures,
         }
     }
 
@@ -152,32 +152,36 @@ impl SkyRenderer {
             }));
     }
 
-    // check_shader_updates remains the same (it uses the stored pipeline_layout which is now correct)
+    /// Check for shader updates and recreate pipeline if needed.
+    /// `output_format` is needed because the pipeline depends on the target format.
     pub fn check_shader_updates(&mut self, output_format: wgpu::TextureFormat) {
-        if self
-            .shader_hot_reload
-            .check_for_updates()
-            .contains(&"sky.wgsl".to_string())
-        {
-            info!("Reloading sky shader");
-            let sky_shader = self.shader_hot_reload.get_shader("sky.wgsl");
-            // The pipeline layout passed here now includes the texture layout
-            self.render_pipeline = Self::create_pipeline(
-                &self.device,
-                &self.pipeline_layout,
-                &sky_shader,
-                output_format,
-            );
+        let updated_shaders = self.shader_hot_reload.check_for_updates();
+
+        if updated_shaders.contains(&"sky.wgsl".to_string()) {
+            self.reload_shader(output_format);
         }
     }
 
-    // Update render to bind the static textures group
+    pub fn reload_shader(&mut self, output_format: wgpu::TextureFormat) {
+        info!("Reloading sky shader");
+        // Get the updated shader module
+        let sky_shader = self.shader_hot_reload.get_shader("sky.wgsl");
+        // Recreate the pipeline using the stored layout and the current output format
+        self.render_pipeline = Self::create_pipeline(
+            &self.device,
+            &self.pipeline_layout, // Use the stored layout
+            &sky_shader,
+            output_format,
+        );
+    }
+
+    // render remains the same
     pub fn render<'rpass>(&'rpass self, rpass: &mut wgpu::RenderPass<'rpass>) {
         if let Some(depth_bind_group) = &self.depth_texture_bind_group {
             rpass.set_pipeline(&self.render_pipeline);
-            // Group 0 (Camera) is assumed to be set by the caller or a previous pass if shared
+            // Group 0 (Camera) is assumed to be set by the caller
             rpass.set_bind_group(1, depth_bind_group, &[]); // Bind depth texture + sampler
-            rpass.set_bind_group(2, &self.static_textures.texture_bind_group, &[]); // <-- Bind static textures
+            rpass.set_bind_group(2, &self.static_textures.texture_bind_group, &[]); // Bind static textures
             rpass.draw(0..4, 0..1);
         } else {
             tracing::warn!("SkyRenderer depth_texture_bind_group not set, skipping render.");

@@ -862,38 +862,6 @@ impl<'window> WgpuCtx<'window> {
         ]
     }
 
-    // fn get_jitter_offset(frame_index: u64, width: u32, height: u32) -> [f32; 2] {
-    //     // Use a Halton sequence or similar low-discrepancy sequence for sub-pixel offsets
-    //     // Example using Halton(2, 3) - need a proper implementation
-    //     fn halton(index: u64, base: u64) -> f32 {
-    //         let mut result = 0.0;
-    //         let mut f = 1.0 / base as f32;
-    //         let mut i = index;
-    //         while i > 0 {
-    //             result += f * (i % base) as f32;
-    //             i /= base;
-    //             f /= base as f32;
-    //         }
-    //         result
-    //     }
-
-    //     // Sequence length, e.g., 8 or 16 frames
-    //     const JITTER_SEQUENCE_LENGTH: u64 = 8;
-    //     let index_in_sequence = frame_index % JITTER_SEQUENCE_LENGTH;
-
-    //     // Generate offset in range [-0.5, 0.5] pixels
-    //     let x = halton(index_in_sequence + 1, 2) - 0.5; // Start index > 0 for Halton
-    //     let y = halton(index_in_sequence + 1, 3) - 0.5;
-
-    //     const SCALE: f32 = 1.0;
-
-    //     // Convert pixel offset to clip space offset (NDC)
-    //     [
-    //         x * (2.0 / width as f32) * SCALE,
-    //         y * (2.0 / height as f32) * SCALE, // Y might need negation depending on NDC convention
-    //     ]
-    // }
-
     /// Updates the camera uniform buffer
     pub fn update_camera_uniform(
         &mut self,
@@ -902,11 +870,13 @@ impl<'window> WgpuCtx<'window> {
         view: Matrix4<f32>,
         position: [f32; 3],
     ) {
-        let jitter = Self::get_jitter_offset(
-            self.frame_index,
-            self.surface_config.width,
-            self.surface_config.height,
-        );
+        // let jitter = Self::get_jitter_offset(
+        //     self.frame_index,
+        //     self.surface_config.width,
+        //     self.surface_config.height,
+        // );
+
+        let jitter = [0.0, 0.0];
 
         let jitter_matrix =
             Matrix4::from_translation(cgmath::Vector3::new(jitter[0], jitter[1], 0.0));
@@ -1141,72 +1111,64 @@ impl<'window> WgpuCtx<'window> {
     // Add a method to check for shader updates and recreate pipelines
     pub fn check_shader_updates(&mut self) {
         let updated_shaders = self.shader_hot_reload.check_for_updates();
-        let mut sky_needs_update = false; // Flag specifically for sky
-        let mut taa_needs_update = false; // <--- ADD Flag for TAA
 
         for shader_name in &updated_shaders {
             match shader_name.as_str() {
                 "bloom.wgsl" => {
-                    // TODO: Reload Bloom pipeline if needed
+                    // TODO: Implement actual bloom reload logic here
+                    // let bloom_shader = self.shader_hot_reload.get_shader("bloom.wgsl");
+                    // self.bloom_effect.reload_pipeline(&bloom_shader); // Or similar
+                    warn!("Bloom shader updated, but automatic reload not implemented yet.");
                 }
                 "color_correction.wgsl" => {
-                    // TODO: Reload Color Correction pipeline if needed
+                    // TODO: Implement actual color correction reload logic here
+                    // let cc_shader = self.shader_hot_reload.get_shader("color_correction.wgsl");
+                    // self.color_correction_effect.reload_pipeline(&cc_shader); // Or similar
+                    warn!("Color correction shader updated, but automatic reload not implemented yet.");
                 }
                 "final_conversion.wgsl" => {
-                    // TODO: Reload Final Conversion pipeline if needed (less common unless logic changes)
                     let final_shader = self.shader_hot_reload.get_shader("final_conversion.wgsl");
-                    let (final_render_pipeline, _) = // Recreate using existing vertex buffer
-                        Self::create_final_render_pipeline_with_shader(
-                            &self.device,
-                            &self.render_texture_bind_group_layout, // Assuming this layout doesn't change
-                            self.surface_config.format,
-                            &final_shader,
-                        );
+                    let (final_render_pipeline, _) = Self::create_final_render_pipeline_with_shader(
+                        &self.device,
+                        &self.render_texture_bind_group_layout,
+                        self.surface_config.format,
+                        &final_shader,
+                    );
                     self.final_render_pipeline = final_render_pipeline;
                     info!("Reloaded final_conversion.wgsl shader and pipeline.");
                 }
+                "voxel.wgsl" => {
+                    // Directly call the reload method, don't delegate the check
+                    self.voxel_renderer.reload_shader();
+                    info!("Reloaded voxel.wgsl shader and pipeline."); // Add confirmation
+                }
                 "sky.wgsl" => {
-                    sky_needs_update = true;
+                    // Directly call the reload method, don't delegate the check
+                    // Make sure SkyRenderer has a public `reload_shader` method
+                    self.sky_renderer
+                        .reload_shader(wgpu::TextureFormat::Rgba32Float);
+                    info!("Reloaded sky.wgsl shader and pipeline.");
                 }
                 "taa.wgsl" => {
-                    // <--- ADD Case for TAA
-                    taa_needs_update = true;
+                    let taa_shader = self.shader_hot_reload.get_shader("taa.wgsl");
+                    self.taa_resolve_pipeline =
+                        self.device
+                            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                                label: Some("TAA Resolve Compute Pipeline (Reloaded)"),
+                                layout: Some(&self.taa_pipeline_layout),
+                                module: &taa_shader,
+                                entry_point: Some("main"),
+                                compilation_options: Default::default(),
+                                cache: None,
+                            });
+                    info!("Reloaded taa.wgsl shader and compute pipeline.");
+                    self.needs_history_reset = true;
                 }
                 _ => {
-                    // Ignore other files or handle voxel shaders internally in VoxelRenderer
+                    // Ignore other files
                 }
             }
         }
-
-        // Check for voxel shader updates in the VoxelRenderer
-        self.voxel_renderer.check_shader_updates();
-
-        // Reload sky shader if needed
-        if sky_needs_update {
-            self.sky_renderer
-                .check_shader_updates(wgpu::TextureFormat::Rgba32Float); // Pass output format
-            info!("Reloaded sky.wgsl shader and pipeline.");
-        }
-
-        // --- (!!) Reload TAA shader if needed ---
-        if taa_needs_update {
-            let taa_shader = self.shader_hot_reload.get_shader("taa.wgsl");
-            self.taa_resolve_pipeline =
-                self.device
-                    .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                        label: Some("TAA Resolve Compute Pipeline (Reloaded)"),
-                        layout: Some(&self.taa_pipeline_layout), // Use stored layout
-                        module: &taa_shader,                     // Use reloaded shader
-                        entry_point: Some("main"),
-                        compilation_options: Default::default(),
-                        cache: None, // Consider using pipeline cache if beneficial
-                    });
-            info!("Reloaded taa.wgsl shader and compute pipeline.");
-            // When TAA shader changes, it's often safest to reset history
-            // as the algorithm might behave differently.
-            self.needs_history_reset = true;
-        }
-        // --- End TAA Reload ---
     }
 
     /// Renders the scene
@@ -1584,6 +1546,8 @@ impl<'window> WgpuCtx<'window> {
                     );
                     self.final_render_pipeline = final_render_pipeline;
 
+                    self.sky_renderer
+                        .reload_shader(wgpu::TextureFormat::Rgba32Float);
                     self.voxel_renderer.reload_shader();
 
                     info!("Forced reload of all shaders");

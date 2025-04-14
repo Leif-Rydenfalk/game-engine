@@ -38,17 +38,15 @@ impl ShaderHotReload {
         let mut modules = self.modules.lock().unwrap();
         let path = self.shader_dir.join(name);
 
-        // Try to get modification time, if file doesn't exist or has other issues,
-        // fallback to embedded shader
         let metadata = match fs::metadata(&path) {
             Ok(meta) => meta,
             Err(e) => {
-                info!(
-                    "Warning: Couldn't read shader file {}: {}",
+                warn!(
+                    // Use warn for errors
+                    "Warning: Couldn't read metadata for shader file {}: {}. Using fallback.",
                     path.display(),
                     e
                 );
-                // Return embedded fallback shader
                 return self.create_fallback_shader(name);
             }
         };
@@ -56,52 +54,73 @@ impl ShaderHotReload {
         let modified = match metadata.modified() {
             Ok(time) => time,
             Err(e) => {
-                info!(
-                    "Warning: Couldn't get modification time for {}: {}",
+                warn!(
+                    // Use warn for errors
+                    "Warning: Couldn't get modification time for {}: {}. Using fallback.",
                     path.display(),
                     e
                 );
-                // Return embedded fallback shader
                 return self.create_fallback_shader(name);
             }
         };
 
+        // Check cache
         if let Some((module, last_modified)) = modules.get(name) {
             if *last_modified >= modified {
+                debug!(
+                    "get_shader({}): Using cached module (timestamp match: {:?} >= {:?})",
+                    name, last_modified, modified
+                ); // Add log
                 return module.clone();
             }
+
+            // Cache is outdated, fall through to load from file
+            debug!("Cached shader {} is outdated. Reloading.", name);
+        } else {
+            debug!("Shader {} not in cache. Loading.", name);
         }
 
-        // Load shader from file
-        let source = match fs::read_to_string(&path) {
-            Ok(content) => content,
+        // --- Load shader from file ---
+        match fs::read_to_string(&path) {
+            Ok(source) => {
+                // *** Successfully read the file ***
+                info!("Compiling shader from file: {}", name); // More specific info
+                let shader_module =
+                    self.device
+                        .create_shader_module(wgpu::ShaderModuleDescriptor {
+                            label: Some(name),
+                            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Owned(source)),
+                        });
+
+                // *** Update cache ONLY on successful load from file ***
+                modules.insert(name.to_string(), (shader_module.clone(), modified));
+                debug!("Updated cache for shader: {}", name);
+
+                shader_module // Return the newly loaded module
+            }
             Err(e) => {
-                info!(
-                    "Warning: Failed to read shader file {}: {}",
+                // *** Failed to read file ***
+                warn!(
+                    "Warning: Failed to read shader file {} after metadata check: {}. Using fallback. Cache timestamp NOT updated.",
                     path.display(),
                     e
                 );
-                // Return embedded fallback shader
-                return self.create_fallback_shader(name);
+                // *** Do NOT update the cache timestamp here ***
+                // Return fallback, but keep the old timestamp in cache so it tries again.
+                // If the cache entry existed, return the old module? Or fallback?
+                // Let's return fallback for consistency.
+                // We need to release the lock before calling create_fallback_shader if it accesses the device.
+                // Although create_fallback_shader doesn't lock `modules`, it's cleaner.
+                drop(modules); // Release the lock before potentially blocking operation
+                self.create_fallback_shader(name)
             }
-        };
-
-        let shader_module = self
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some(name),
-                source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Owned(source)),
-            });
-
-        modules.insert(name.to_string(), (shader_module.clone(), modified));
-        info!("Loaded shader: {}", name);
-
-        shader_module
+        }
     }
 
+    // Add warn level logging to create_fallback_shader for clarity
     fn create_fallback_shader(&self, name: &str) -> wgpu::ShaderModule {
-        // For simplicity, we're using empty shaders as fallbacks
-        // In a real implementation, you would embed the shaders here
+        warn!("Creating fallback shader for: {}", name); // Add logging
+                                                         // ... rest of the function ...
         let fallback_source = match name {
             "bloom.wgsl" => include_str!("shaders/bloom.wgsl"),
             "color_correction.wgsl" => include_str!("shaders/color_correction.wgsl"),
@@ -110,7 +129,7 @@ impl ShaderHotReload {
             "voxel.wgsl" => include_str!("shaders/voxel.wgsl"),
             "taa.wgsl" => include_str!("shaders/taa.wgsl"),
             _ => {
-                info!("Unknown shader: {}, using empty fallback", name);
+                warn!("Unknown shader: {}, using empty fallback", name); // Use warn
                 "// Empty fallback shader\n@vertex fn vs_main() -> @builtin(position) vec4<f32> { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }\n@fragment fn fs_main() -> @location(0) vec4<f32> { return vec4<f32>(1.0, 0.0, 1.0, 1.0); }"
             }
         };
