@@ -329,10 +329,18 @@ fn skyRay(org: vec3f, dir: vec3f, sun_direction: vec3f, fast: bool) -> vec3f {
 
 }
 
+fn HenyeyGreenstein(mu: f32, inG: f32) -> f32 {
+    let g2 = inG * inG;
+    let denom_term = 1.0 + g2 - 2.0 * inG * mu;
+    // Add epsilon to denominator to avoid potential division by zero or instability near poles
+    let denom = pow(max(0.0001, denom_term), 1.5) * 4.0 * PI;
+    if (denom < 0.00001) { return 0.0; } // Avoid division by zero if input is pathological
+    return (1.0 - g2) / denom;
+}
+
 struct VertexOutput {
     @builtin(position) position: vec4f,
-    @location(0) world_pos: vec3f, // Pass world position for view direction calc
-    @location(1) ndc: vec4f, // Not strictly needed in fragment shader here
+    @location(0) view_dir_ws: vec3f, // Pass World Space View Direction
 };
 
 @vertex
@@ -342,46 +350,71 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
         vec2f(-1.0, 1.0), vec2f(1.0, 1.0)
     );
     let pos = positions[vertex_index];
-    let ndc = vec4f(pos.x, -pos.y, 1.0, 1.0); // Use Z=1 for far plane
-    let world = camera.inv_view_proj * ndc;
-    let world_xyz = world.xyz / world.w;
+    let ndc = vec4f(pos.x, -pos.y, 1.0, 1.0); // Point on far plane NDC
+    let world_far_plane = camera.inv_view_proj * ndc;
+    let world_far_plane_xyz = world_far_plane.xyz / world_far_plane.w;
+
+    // Calculate world space direction FROM camera TO far plane point
+    let view_direction_world_space = normalize(world_far_plane_xyz - camera.position);
 
     var output: VertexOutput;
-    output.position = vec4f(pos, 0.0, 1.0); // Project to near plane for rasterizer
-    output.world_pos = world_xyz;
-    output.ndc = ndc;
+    // Use near plane for rasterization, but direction is calculated towards far plane
+    output.position = vec4f(pos, 0.0, 1.0);
+    output.view_dir_ws = view_direction_world_space;
     return output;
 }
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4f {
     let frag_coord = vec2<i32>(floor(input.position.xy));
-    // Clamp coordinates to valid range before loading depth
     let texture_dims = textureDimensions(depth_texture, 0);
     let clamped_coord = clamp(frag_coord, vec2<i32>(0), vec2<i32>(texture_dims) - vec2<i32>(1));
     let depth = textureLoad(depth_texture, clamped_coord, 0).r;
 
-    // If depth is very large (voxel ray missed), draw sky
-    if depth >= 1000000.0 { // Use a large value indicating "infinity" or background
-        // Calculate ray origin and direction for sky rendering
+    if depth >= 1000000.0 {
+        // Ray origin IS the camera position
         let org = camera.position;
-        // Direction from camera *to* the far plane world position
-        let dir = normalize(input.world_pos - org);
+        // Ray direction is passed directly from vertex shader
+        let dir = input.view_dir_ws; // Already normalized
 
-        // Define sun direction (can be made uniform later)
+        // --- Rest of your fragment shader ---
         let sun_direction = normalize( vec3f(0.6, 0.45, -0.8) );
+        let mu = dot(sun_direction, dir);
+        let earth_center = vec3f(0.0, -EARTH_RADIUS, 0.0);
 
-        // Call the ported sky rendering function
-        let sky_color = skyRay(org, dir, sun_direction, false); // Use 'false' for higher quality
+        var fogDistance = intersectSphere(org, dir, earth_center, EARTH_RADIUS);
 
-        // Apply some basic exposure/tonemapping if needed
-        // Slightly adjusted exposure from original post
-        let final_color = pow(sky_color * 0.04, vec3f(1.0)); 
+        var scene_color = vec3f(0.0, 1.0, 0.0); // Placeholder
+        if (fogDistance < 0.0) {
+             // Use WORLD space origin and direction for sky ray
+            scene_color = skyRay(org, dir, sun_direction, false);
+            fogDistance = intersectSphere(org, dir, earth_center, EARTH_RADIUS + 160.0);
+            if (fogDistance < 0.0) {
+                fogDistance = 1000000.0;
+            }
+        }
+
+        // Calculate Fog Color & Phase (matching commented GLSL)
+        let fogPhase = 0.5 * HenyeyGreenstein(mu, 0.7) + 0.5 * HenyeyGreenstein(mu, -0.6);
+        // Original GLSL fog color components:
+        // Directional scattering: fogPhase * 0.1 * LOW_SCATTER * SUN_POWER
+        // Ambient fog term: 10.0 * vec3(0.55, 0.8, 1.0)
+        let fog_scatter_color = fogPhase * 0.1 * LOW_SCATTER * SUN_POWER;
+        let fog_ambient_color = 10.0 * vec3f(0.55, 0.8, 1.0);
+        let fogColor = fog_scatter_color + fog_ambient_color;
+
+        // Apply Fog using exponential falloff
+        let fog_density = 0.00003;
+        // Ensure distance is non-negative for exp calculation
+        let fog_factor = exp(-fog_density * max(0.0, fogDistance));
+        let final_color_with_fog = mix(fogColor, scene_color, fog_factor);
+
+        // Apply final brightness factor (from original GLSL)
+        let final_color = 0.06 * final_color_with_fog;
 
         return vec4f(final_color, 1.0);
 
     } else {
-        // Voxel terrain is here, discard this fragment so terrain shows through
         discard;
     }
 }

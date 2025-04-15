@@ -28,6 +28,7 @@ const PI: f32 = 3.141592;
 const EARTH_RADIUS: f32 = 6300000.0;
 const CLOUD_START: f32 = 800.0;
 const CLOUD_HEIGHT: f32 = 600.0;
+const SUN_POWER: vec3f = vec3f(1.0, 0.9, 0.6) * 750.0;
 const LOW_SCATTER: vec3f = vec3f(1.0, 0.7, 0.5);
 
 // --- Ported Helper Functions ---
@@ -62,16 +63,6 @@ fn fbm3d( p_in: vec3f ) -> f32 { // Expects world-space input from clouds()
     f += 0.2500 * noise3d( p ); p = m * p * 2.03;
     f += 0.1250 * noise3d( p );
     return f;
-}
-
-fn ACESFilm(x: vec3<f32>) -> vec3<f32> {
-    let a: f32 = 2.51;
-    let b: f32 = 0.03;
-    let c: f32 = 2.43;
-    let d: f32 = 0.59;
-    let e: f32 = 0.14;
-
-    return clamp((x * (a * x + vec3<f32>(b))) / (x * (c * x + vec3<f32>(d)) + vec3<f32>(e)), vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
 // Intersects a ray (origin_cs, dir_cs) with a sphere (spherePos_cs, sphereRad)
@@ -114,14 +105,14 @@ fn clouds(p_cs: vec3f, earth_center_cs: vec3f, fast: bool) -> CloudInfo {
 
     // Use world-space position for time-based offsets and texture lookups
     var p_noise = p_ws;
-    //p_noise.z += camera.time * 10.3;
+    p_noise.z += camera.time * 10.3;
     let weather_uv1 = -0.00005 * p_noise.zx;
-    let largeWeather = clamp((textureSampleLevel(pebble_texture, terrain_sampler, weather_uv1, 0.0).r - 0.18) * 5.0, 0.0, 2.0) + 1.3;
+    let largeWeather = clamp((textureSampleLevel(pebble_texture, terrain_sampler, weather_uv1, 0.0).r - 0.18) * 5.0, 0.0, 2.0);
 
     p_noise = p_ws; // Reset for second lookup
-    //p_noise.x += camera.time * 8.3;
+    p_noise.x += camera.time * 8.3;
     let weather_uv2 = 0.0002 * p_noise.zx;
-    var weather = largeWeather * max(0.0, textureSampleLevel(pebble_texture, terrain_sampler, weather_uv2, 0.0).r - 0.28) / 0.72 + 0.2;
+    var weather = largeWeather * max(0.0, textureSampleLevel(pebble_texture, terrain_sampler, weather_uv2, 0.0).r - 0.28) / 0.72;
     weather *= smoothstep(0.0, 0.5, cloudHeightNorm) * smoothstep(1.0, 0.5, cloudHeightNorm);
 
     let cloudShape = pow(weather, 0.3 + 1.5 * smoothstep(0.2, 0.5, cloudHeightNorm));
@@ -135,7 +126,7 @@ fn clouds(p_cs: vec3f, earth_center_cs: vec3f, fast: bool) -> CloudInfo {
     }
 
     p_noise = p_ws; // Reset for 3D noise
-   // p_noise.x += camera.time * 12.3;
+    p_noise.x += camera.time * 12.3;
     // Use WORLD SPACE position for fbm3d (which uses noise3d)
     var den = max(0.0, cloudShape - 0.7 * fbm3d(p_noise * 0.01));
     if (den <= 0.0) {
@@ -149,7 +140,7 @@ fn clouds(p_cs: vec3f, earth_center_cs: vec3f, fast: bool) -> CloudInfo {
     }
 
     p_noise = p_ws; // Reset for second 3D noise
-    //p_noise.y += camera.time * 15.2;
+    p_noise.y += camera.time * 15.2;
     // Use WORLD SPACE position for fbm3d
     den = max(0.0, den - 0.2 * fbm3d(p_noise * 0.05));
 
@@ -229,7 +220,7 @@ fn lightRay(p_cs_in: vec3f, phaseFunction: f32, dC: f32, mu: f32, sun_direction_
 // sun_direction_cs: Sun direction vector, in CAMERA SPACE.
 // earth_center_cs: Earth center position, in CAMERA SPACE.
 // fast: Boolean flag.
-fn skyRay(org_cs: vec3f, dir_cs: vec3f, sun_direction_cs: vec3f, sun_power: vec3f, earth_center_cs: vec3f, fast: bool) -> vec3f {
+fn skyRay(org_cs: vec3f, dir_cs: vec3f, sun_direction_cs: vec3f, earth_center_cs: vec3f, fast: bool) -> vec3f {
     let ATM_START = EARTH_RADIUS + CLOUD_START;
     let ATM_END = ATM_START + CLOUD_HEIGHT;
 
@@ -247,11 +238,6 @@ fn skyRay(org_cs: vec3f, dir_cs: vec3f, sun_direction_cs: vec3f, sun_power: vec3
 
     // *** Widen Sun Smoothstep slightly ***
     let sun_disk_intensity = 1e4 * smoothstep(0.9995, 1.0, mu); // Lowered 0.9998 threshold
-    
-    // Background sky color calculation
-    //let background_base = mix(vec3f(0.2, 0.6, 1.0), vec3f(0.8, 0.95, 1.0), pow(0.5 + 0.5 * mu, 15.0));
-    let background_base = vec3f(0.4, 0.6, 1.0);
-    var background = 9.0 * background_base;
 
     if (distToAtmStart >= distToAtmEnd || distToAtmEnd < 0.0) {
         // Calculate background color directly (no cloud intersection)
@@ -259,6 +245,7 @@ fn skyRay(org_cs: vec3f, dir_cs: vec3f, sun_direction_cs: vec3f, sun_power: vec3
         // *** Use World Space Y for horizon mix ***
         let background_horizon_bg = mix(vec3f(3.5), vec3f(0.0), min(1.0, 2.3 * max(0.0, dir_ws.y)));
         var background_bg = 6.0 * background_base_bg + background_horizon_bg;
+        if (!fast) { background_bg += vec3f(sun_disk_intensity); } // Add sun disk here
         return background_bg;
     } else {
         // Start ray marching from atmosphere entry point in camera space
@@ -283,12 +270,11 @@ fn skyRay(org_cs: vec3f, dir_cs: vec3f, sun_direction_cs: vec3f, sun_power: vec3
                     // Call lightRay with camera-space inputs
                     let intensity = lightRay(p_cs, phaseFunction, density, mu, sun_direction_cs, earth_center_cs, cloud_info.cloud_height_norm, fast);
 
-                    // let ambient_sky = vec3f(0.2, 0.5, 1.0) * 6.5;
-                    let ambient_sky = background;
+                    let ambient_sky = vec3f(0.2, 0.5, 1.0) * 6.5;
                     let ambient_cloud = vec3f(0.8);
                     let ambient_mix = cloud_info.cloud_height_norm;
                     let ambient = (0.5 + 0.6 * ambient_mix) * ambient_sky + ambient_cloud * max(0.0, 1.0 - 2.0 * ambient_mix);
-                    let radiance = (ambient + sun_power * intensity);
+                    let radiance = (ambient + SUN_POWER * intensity);
 
                     let BeerTerm = exp(-density * stepS);
                     let Sint = select( stepS, (1.0 - BeerTerm) / density, density > 0.00001);
@@ -302,7 +288,24 @@ fn skyRay(org_cs: vec3f, dir_cs: vec3f, sun_direction_cs: vec3f, sun_power: vec3
             }
         } // end if dir_ws.y > -0.1
 
+        if (!fast && T > 0.05) {
+            // (Background noise calculation remains the same, using pC_ws)
+            let distToBgSphere = intersectSphere(org_cs, dir_cs, earth_center_cs, ATM_END + 1000.0);
+            if (distToBgSphere > 0.0) {
+                let pC_cs = org_cs + distToBgSphere * dir_cs;
+                 let pC_ws = (camera.inv_view * vec4f(pC_cs, 1.0)).xyz;
+                 color += T * vec3f(3.0) * max(0.0, fbm3d(pC_ws * 0.002 * vec3f(1.0, 1.0, 1.8)) - 0.4);
+            }
+        }
 
+        // Background sky color calculation
+        let background_base = mix(vec3f(0.2, 0.52, 1.0), vec3f(0.8, 0.95, 1.0), pow(0.5 + 0.5 * mu, 15.0));
+         // *** Use World Space Y for horizon mix ***
+        let background_horizon = mix(vec3f(3.5), vec3f(0.0), min(1.0, 2.3 * max(0.0, dir_ws.y)));
+        var background = 6.0 * background_base + background_horizon;
+
+        // Add sun disk to background *before* final attenuation by T
+        if (!fast) { background += vec3f(sun_disk_intensity); }
         color += background * T; // Add background attenuated by clouds
 
         return color;
@@ -341,41 +344,54 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
     let clamped_coord = clamp(frag_coord, vec2<i32>(0), vec2<i32>(texture_dims) - vec2<i32>(1));
     let depth = textureLoad(depth_texture, clamped_coord, 0).r;
 
-
-    const SKY_DEPTH_THRESHOLD = 1000000.0; 
-                     
-    if depth >= SKY_DEPTH_THRESHOLD { // Sky pixel check potentially modified
+    if depth >= 1000000.0 { // Sky pixel
         let org_cs = vec3f(0.0);
         let dir_cs = input.view_dir_cs;
+
+        // --- Define World Space Constants ---
         let sun_direction_ws = normalize( vec3f(0.6, 0.45, -0.8) );
-        var sun_power = vec3f(1.0, 0.9, 0.6) * 750.0 * (sin(camera.time) + 1.0);
         let earth_center_ws = vec3f(0.0, -EARTH_RADIUS, 0.0);
+
+        // --- Transform Constants to Camera Space ---
         let sun_direction_cs = normalize((camera.view * vec4f(sun_direction_ws, 0.0)).xyz);
         let earth_center_cs = (camera.view * vec4f(earth_center_ws, 1.0)).xyz;
-        let mu = dot(sun_direction_cs, dir_cs); // mu for sun angle effects
 
-        // Call skyRay - now it doesn't add the sun disk internally
-        var scene_color = skyRay(org_cs, dir_cs, sun_direction_cs, sun_power, earth_center_cs, false);
+        // --- Calculate Sky & Fog ---
+        let mu = dot(sun_direction_cs, dir_cs);
 
-        // --- Apply Exposure/Tonemapping ---
-        var final_color = scene_color;
+        // Calculate distance to Earth surface for fog distance (using camera space)
+        var fogDistance = intersectSphere(org_cs, dir_cs, earth_center_cs, EARTH_RADIUS);
 
-        // Adjust exposure - start with less reduction
-        final_color *= 0.07;
+        var scene_color: vec3f;
+        if (fogDistance < 0.0) { // Ray missed Earth -> Render Sky
+            // Call skyRay with CAMERA SPACE inputs
+            scene_color = skyRay(org_cs, dir_cs, sun_direction_cs, earth_center_cs, false);
 
-        // // Reinhard Tonemapping (Example) - Often better for HDR
-        // final_color = final_color / (final_color + vec3f(1.0));
+            // Recalculate fog distance to slightly above ground (camera space)
+            fogDistance = intersectSphere(org_cs, dir_cs, earth_center_cs, EARTH_RADIUS + 160.0);
+            if (fogDistance < 0.0) { fogDistance = 1000000.0; }
+        } else {
+             // Ray hit earth sphere (looking down) - still calculate sky color using skyRay
+             // skyRay handles the background color correctly based on world direction now.
+             scene_color = skyRay(org_cs, dir_cs, sun_direction_cs, earth_center_cs, false);
+        }
 
-        // Or keep power curve, but maybe adjust exponent
-        // final_color = pow(final_color, vec3f(1.0 / 2.2)); // Gamma correction instead of squaring
+        // Calculate Fog Color & Phase (using camera space mu)
+        let fogPhase = 0.5 * HenyeyGreenstein(mu, 0.7) + 0.5 * HenyeyGreenstein(mu, -0.6);
+        let fog_scatter_color = fogPhase * 0.1 * LOW_SCATTER * SUN_POWER;
+        let fog_ambient_color = 10.0 * vec3f(0.55, 0.8, 1.0);
+        let fogColor = fog_scatter_color + fog_ambient_color;
 
-        final_color = pow(final_color, vec3(2.0));
- 
-        final_color = ACESFilm(final_color);
+        // Apply Fog using exponential falloff
+        let fog_density = 0.00003;
+        let fog_factor = exp(-fog_density * max(0.0, fogDistance));
+        let final_color_with_fog = mix(fogColor, scene_color, fog_factor);
+
+        let final_color = 0.06 * final_color_with_fog;
 
         return vec4f(final_color, 1.0);
 
     } else {
-        discard; // Pixel belongs to scene geometry
+        discard;
     }
 }
