@@ -50,6 +50,9 @@ pub use model::*;
 mod world;
 pub use world::*;
 
+mod entity;
+pub use entity::*;
+
 mod voxels;
 pub use voxels::*;
 

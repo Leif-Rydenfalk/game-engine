@@ -26,8 +26,8 @@ struct CameraUniform {
 // --- Ported Shadertoy Constants ---
 const PI: f32 = 3.141592;
 const EARTH_RADIUS: f32 = 6300000.0;
-const CLOUD_START: f32 = 300.0;
-const CLOUD_HEIGHT: f32 = 500.0;
+const CLOUD_START: f32 = 200.0;
+const CLOUD_HEIGHT: f32 = 400.0;
 const LOW_SCATTER: vec3f = vec3f(1.0, 0.7, 0.5);
 
 // --- Ported Helper Functions ---
@@ -98,6 +98,7 @@ struct CloudInfo {
     cloud_height_norm: f32,
 }
 
+
 // Calculates cloud density at a given point.
 // p_cs: Position to sample clouds, in CAMERA SPACE.
 // earth_center_cs: Position of the Earth's center, in CAMERA SPACE.
@@ -121,7 +122,7 @@ fn clouds(p_cs: vec3f, earth_center_cs: vec3f, fast: bool) -> CloudInfo {
     p_noise = p_ws; // Reset for second lookup
     //p_noise.x += camera.time * 8.3;
     let weather_uv2 = 0.0002 * p_noise.zx;
-    var weather = largeWeather * max(0.0, textureSampleLevel(pebble_texture, terrain_sampler, weather_uv2, 0.0).r - 0.28) / 0.72 + 0.08;
+    var weather = largeWeather * max(0.0, textureSampleLevel(pebble_texture, terrain_sampler, weather_uv2, 0.0).r - 0.28) / 0.72 + 0.1;
     weather *= smoothstep(0.0, 0.5, cloudHeightNorm) * smoothstep(1.0, 0.5, cloudHeightNorm);
 
     let cloudShape = pow(weather, 0.3 + 1.5 * smoothstep(0.2, 0.5, cloudHeightNorm));
@@ -229,7 +230,7 @@ fn lightRay(p_cs_in: vec3f, phaseFunction: f32, dC: f32, mu: f32, sun_direction_
 // sun_direction_cs: Sun direction vector, in CAMERA SPACE.
 // earth_center_cs: Earth center position, in CAMERA SPACE.
 // fast: Boolean flag.
-fn skyRay(org_cs: vec3f, dir_cs: vec3f, sun_direction_cs: vec3f, sun_power: vec3f, earth_center_cs: vec3f, fast: bool) -> vec3f {
+fn skyRay(org_cs: vec3f, dir_cs: vec3f, sun_direction_cs: vec3f, sun_light: vec3f, earth_center_cs: vec3f, fast: bool) -> vec3f {
     let ATM_START = EARTH_RADIUS + CLOUD_START;
     let ATM_END = ATM_START + CLOUD_HEIGHT;
 
@@ -245,20 +246,12 @@ fn skyRay(org_cs: vec3f, dir_cs: vec3f, sun_direction_cs: vec3f, sun_power: vec3
     // *** Calculate World Space Direction for Horizon Checks ***
     let dir_ws = normalize((camera.inv_view * vec4f(dir_cs, 0.0)).xyz);
 
-    // *** Widen Sun Smoothstep slightly ***
-    let sun_disk_intensity = 1e4 * smoothstep(0.9995, 1.0, mu); // Lowered 0.9998 threshold
-    
     // Background sky color calculation
-    //let background_base = mix(vec3f(0.2, 0.6, 1.0), vec3f(0.8, 0.95, 1.0), pow(0.5 + 0.5 * mu, 15.0));
     let background_base = vec3f(0.4, 0.6, 1.0);
     var background = 9.0 * background_base;
 
     if distToAtmStart >= distToAtmEnd || distToAtmEnd < 0.0 {
-        // Calculate background color directly (no cloud intersection)
-        let background_base_bg = mix(vec3f(0.2, 0.52, 1.0), vec3f(0.8, 0.95, 1.0), pow(0.5 + 0.5 * mu, 15.0));
-        // *** Use World Space Y for horizon mix ***
-        let background_horizon_bg = mix(vec3f(3.5), vec3f(0.0), min(1.0, 2.3 * max(0.0, dir_ws.y)));
-        var background_bg = 6.0 * background_base_bg + background_horizon_bg;
+        var background_bg = background;
         return background_bg;
     } else {
         // Start ray marching from atmosphere entry point in camera space
@@ -285,10 +278,10 @@ fn skyRay(org_cs: vec3f, dir_cs: vec3f, sun_direction_cs: vec3f, sun_power: vec3
 
                     // let ambient_sky = vec3f(0.2, 0.5, 1.0) * 6.5;
                     let ambient_sky = background;
-                    let ambient_cloud = vec3f(0.8);
+                    let ambient_cloud = vec3f(0.2, 0.2, 0.2) * 4.0;
                     let ambient_mix = cloud_info.cloud_height_norm;
                     let ambient = (0.5 + 0.6 * ambient_mix) * ambient_sky + ambient_cloud * max(0.0, 1.0 - 2.0 * ambient_mix);
-                    let radiance = (ambient + sun_power * intensity);
+                    let radiance = (ambient + sun_light * intensity);
 
                     let BeerTerm = exp(-density * stepS);
                     let Sint = select(stepS, (1.0 - BeerTerm) / density, density > 0.00001);
@@ -353,26 +346,20 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
         let org_cs = vec3f(0.0);
         let dir_cs = input.view_dir_cs;
         let sun_direction_ws = normalize(vec3f(0.6, 0.45, -0.8));
-        var sun_power = vec3f(1.0, 0.9, 0.6) * 300.0; //750.0 * (sin(camera.time) + 1.0);
+        var sun_light = vec3f(1.0, 0.9, 0.6) * 300.0; //750.0 * (sin(camera.time) + 1.0);
+        //var sun_light = vec3f(16.0, 3.9, 0.6) * 30.0;
         let earth_center_ws = vec3f(0.0, -EARTH_RADIUS, 0.0);
         let sun_direction_cs = normalize((camera.view * vec4f(sun_direction_ws, 0.0)).xyz);
         let earth_center_cs = (camera.view * vec4f(earth_center_ws, 1.0)).xyz;
-        let mu = dot(sun_direction_cs, dir_cs); // mu for sun angle effects
-
-        // Call skyRay - now it doesn't add the sun disk internally
-        var scene_color = skyRay(org_cs, dir_cs, sun_direction_cs, sun_power, earth_center_cs, false);
+ 
+        // Call skyRay
+        var scene_color = skyRay(org_cs, dir_cs, sun_direction_cs, sun_light, earth_center_cs, false);
 
         // --- Apply Exposure/Tonemapping ---
         var final_color = scene_color;
 
         // Adjust exposure - start with less reduction
         final_color *= 0.07;
-
-        // // Reinhard Tonemapping (Example) - Often better for HDR
-        // final_color = final_color / (final_color + vec3f(1.0));
-
-        // Or keep power curve, but maybe adjust exponent
-        // final_color = pow(final_color, vec3f(1.0 / 2.2)); // Gamma correction instead of squaring
 
         final_color = pow(final_color, vec3(2.0));
 

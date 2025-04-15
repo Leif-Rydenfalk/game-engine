@@ -1,6 +1,6 @@
 use crate::{
-    BloomEffect, Camera, ColorCorrectionEffect, ColorCorrectionUniform, ImguiState, Model,
-    ShaderHotReload, SkyRenderer, StaticTextures, Transform, VoxelRenderer,
+    BloomEffect, Camera, ColorCorrectionEffect, ColorCorrectionUniform, EntityRenderer, ImguiState,
+    Model, ShaderHotReload, SkyRenderer, StaticTextures, Transform, VoxelRenderer,
 };
 use cgmath::{Matrix4, Point3, SquareMatrix};
 use hecs::World;
@@ -108,6 +108,7 @@ pub struct WgpuCtx<'window> {
 
     // Renderers and UI
     pub imgui: ImguiState,
+    entity_renderer: EntityRenderer,
     voxel_renderer: VoxelRenderer,
     sky_renderer: SkyRenderer,
 }
@@ -323,7 +324,6 @@ impl<'window> WgpuCtx<'window> {
         let static_textures =
             Arc::new(StaticTextures::new(Arc::clone(&device), Arc::clone(&queue)));
 
-        // Initialize voxel renderer
         let voxel_renderer = VoxelRenderer::new(
             Arc::clone(&device),
             Arc::clone(&queue),
@@ -332,7 +332,15 @@ impl<'window> WgpuCtx<'window> {
             static_textures.clone(),
         );
 
-        // --- Initialize SkyRenderer ---
+        let entity_renderer = EntityRenderer::new(
+            Arc::clone(&device),
+            Arc::clone(&queue),
+            &camera_bind_group_layout,
+            Arc::clone(&shader_hot_reload),
+            wgpu::TextureFormat::Rgba32Float,
+            static_textures.clone(),
+        );
+
         let mut sky_renderer = SkyRenderer::new(
             Arc::clone(&device),
             Arc::clone(&queue),
@@ -465,6 +473,7 @@ impl<'window> WgpuCtx<'window> {
             time: Instant::now(),
             hidpi_factor: window.scale_factor(),
             imgui,
+            entity_renderer,
             voxel_renderer,
             sky_renderer,
         }
@@ -1110,11 +1119,10 @@ impl<'window> WgpuCtx<'window> {
             &self.post_process_texture_view, // Input to CC
         );
 
-        // --- Update SkyRenderer's depth texture view ---
+        self.entity_renderer
+            .update_depth_texture_bind_group(&self.voxel_depth_texture_view);
         self.sky_renderer
             .update_depth_texture_bind_group(&self.voxel_depth_texture_view);
-        info!("Updated sky renderer depth texture bind group.");
-        // --- End SkyRenderer Update ---
     }
 
     // Add a method to check for shader updates and recreate pipelines
@@ -1151,9 +1159,12 @@ impl<'window> WgpuCtx<'window> {
                     self.voxel_renderer.reload_shader();
                     info!("Reloaded voxel.wgsl shader and pipeline."); // Add confirmation
                 }
+                "entity.wgsl" => {
+                    self.entity_renderer
+                        .reload_shader(wgpu::TextureFormat::Rgba32Float);
+                    info!("Reloaded entity.wgsl shader and pipeline.");
+                }
                 "sky.wgsl" => {
-                    // Directly call the reload method, don't delegate the check
-                    // Make sure SkyRenderer has a public `reload_shader` method
                     self.sky_renderer
                         .reload_shader(wgpu::TextureFormat::Rgba32Float);
                     info!("Reloaded sky.wgsl shader and pipeline.");
@@ -1244,7 +1255,37 @@ impl<'window> WgpuCtx<'window> {
 
             // Render Voxels (writes color@0 and depth@1)
             self.voxel_renderer.render(&mut voxel_pass);
-        } // End Voxel Render Pass Scope
+        }
+
+        // --- Entity Rendering ---
+        {
+            // Now voxel_depth_texture is finished being written to and can be read.
+            // This pass only targets the color buffer.
+            let mut entity_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Entity Render Pass"),
+                color_attachments: &[
+                    // Attachment 0: Main HDR Color (Rgba32Float)
+                    Some(wgpu::RenderPassColorAttachment {
+                        view: &self.render_texture_view, // Target same color buffer
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,    // <<<< Load the voxel colors
+                            store: wgpu::StoreOp::Store, // Store combined result for post-fx/final
+                        },
+                    }),
+                    // NO depth attachment here
+                ],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            // Set camera again for this pass
+            entity_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+
+            // Render Sky (reads depth texture via bind group, writes color@0)
+            self.entity_renderer.render(&mut entity_pass);
+        } // End Sky Render Pass Scope
 
         // --- Sky Rendering ---
         {
@@ -1274,7 +1315,7 @@ impl<'window> WgpuCtx<'window> {
 
             // Render Sky (reads depth texture via bind group, writes color@0)
             self.sky_renderer.render(&mut sky_pass);
-        } // End Sky Render Pass Scope
+        }
 
         // --- Post Processing ---
         // TODO: Review post-processing chain. Does Bloom write to post_process_texture?

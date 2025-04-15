@@ -125,8 +125,9 @@ impl ShaderHotReload {
             "bloom.wgsl" => include_str!("shaders/bloom.wgsl"),
             "color_correction.wgsl" => include_str!("shaders/color_correction.wgsl"),
             "final_conversion.wgsl" => include_str!("shaders/final_conversion.wgsl"),
-            "sky.wgsl" => include_str!("shaders/sky.wgsl"),
             "voxel.wgsl" => include_str!("shaders/voxel.wgsl"),
+            "entity.wgsl" => include_str!("shaders/entity.wgsl"),
+            "sky.wgsl" => include_str!("shaders/sky.wgsl"),
             "taa.wgsl" => include_str!("shaders/taa.wgsl"),
             _ => {
                 warn!("Unknown shader: {}, using empty fallback", name); // Use warn
