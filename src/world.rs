@@ -229,39 +229,39 @@ pub fn update_world(world: &mut World, input: &mut Input, dt: Duration) {
     for (_, (transform, _, fps_controller)) in
         world.query_mut::<(&mut Transform, &Camera, &mut FPSController)>()
     {
-        // // Movement using left stick
-        // let (raw_move_x, raw_move_z) = input.left_stick_vector(controller_idx);
+        // Movement using left stick
+        let (raw_move_x, raw_move_z) = input.left_stick_vector(controller_idx);
 
-        // // Calculate the magnitude of the move vector
-        // let move_magnitude = (raw_move_x * raw_move_x + raw_move_z * raw_move_z).sqrt();
+        // Calculate the magnitude of the move vector
+        let move_magnitude = (raw_move_x * raw_move_x + raw_move_z * raw_move_z).sqrt();
 
-        // if move_magnitude > 0.0 {
-        //     // Apply exponential response curve to the magnitude
-        //     let scaled_magnitude = move_magnitude.powf(2.5);
+        if move_magnitude > 0.0 {
+            // Apply exponential response curve to the magnitude
+            let scaled_magnitude = move_magnitude.powf(2.5);
 
-        //     // Scale the original direction by the new magnitude
-        //     let scale_factor = scaled_magnitude / move_magnitude;
-        //     let move_x = raw_move_x * scale_factor;
-        //     let move_z = raw_move_z * scale_factor;
+            // Scale the original direction by the new magnitude
+            let scale_factor = scaled_magnitude / move_magnitude;
+            let move_x = raw_move_x * scale_factor;
+            let move_z = raw_move_z * scale_factor;
 
-        //     // Calculate forward and right vectors based on yaw only (for FPS-style movement)
-        //     // This ensures movement is always in the XZ plane regardless of pitch
-        //     let yaw_quat = Quaternion::from_axis_angle(Vector3::unit_y(), Rad(fps_controller.yaw));
-        //     let forward = yaw_quat * -Vector3::unit_z(); // Forward vector in XZ plane
-        //     let right = yaw_quat * Vector3::unit_x(); // Right vector in XZ plane
+            // Calculate forward and right vectors based on yaw only (for FPS-style movement)
+            // This ensures movement is always in the XZ plane regardless of pitch
+            let yaw_quat = Quaternion::from_axis_angle(Vector3::unit_y(), Rad(fps_controller.yaw));
+            let forward = yaw_quat * -Vector3::unit_z(); // Forward vector in XZ plane
+            let right = yaw_quat * Vector3::unit_x(); // Right vector in XZ plane
 
-        //     // Apply movement based on stick input
-        //     transform.position += forward * move_z * move_speed * dt_seconds;
-        //     transform.position += right * move_x * move_speed * dt_seconds;
-        // }
+            // Apply movement based on stick input
+            transform.position += forward * move_z * move_speed * dt_seconds;
+            transform.position += right * move_x * move_speed * dt_seconds;
+        }
 
-        // // Vertical movement using triggers
-        // let up_input = input.is_controller_button_down(controller_idx, gilrs::Button::South);
-        // let down_input = input.is_controller_button_down(controller_idx, gilrs::Button::West);
-        // transform.position.y +=
-        //     (up_input as i8 - down_input as i8) as f32 * move_speed * dt_seconds;
+        // Vertical movement using triggers
+        let up_input = input.is_controller_button_down(controller_idx, gilrs::Button::South);
+        let down_input = input.is_controller_button_down(controller_idx, gilrs::Button::West);
+        transform.position.y +=
+            (up_input as i8 - down_input as i8) as f32 * move_speed * dt_seconds;
 
-        transform.position.z += -move_speed * dt_seconds;
+        //transform.position.z += -move_speed * dt_seconds;
 
         // Camera rotation using right stick
         let (raw_look_x, raw_look_y) = input.right_stick_vector(controller_idx);

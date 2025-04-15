@@ -116,12 +116,12 @@ fn clouds(p_cs: vec3f, earth_center_cs: vec3f, fast: bool) -> CloudInfo {
     var p_noise = p_ws;
     //p_noise.z += camera.time * 10.3;
     let weather_uv1 = -0.00005 * p_noise.zx;
-    let largeWeather = clamp((textureSampleLevel(pebble_texture, terrain_sampler, weather_uv1, 0.0).r - 0.18) * 5.0, 0.0, 2.0) + 1.3;
+    let largeWeather = clamp((textureSampleLevel(pebble_texture, terrain_sampler, weather_uv1, 0.0).r - 0.18) * 5.0, 0.0, 2.0) + 0.8;
 
     p_noise = p_ws; // Reset for second lookup
     //p_noise.x += camera.time * 8.3;
     let weather_uv2 = 0.0002 * p_noise.zx;
-    var weather = largeWeather * max(0.0, textureSampleLevel(pebble_texture, terrain_sampler, weather_uv2, 0.0).r - 0.28) / 0.72 + 0.2;
+    var weather = largeWeather * max(0.0, textureSampleLevel(pebble_texture, terrain_sampler, weather_uv2, 0.0).r - 0.28) / 0.72 + 0.02;
     weather *= smoothstep(0.0, 0.5, cloudHeightNorm) * smoothstep(1.0, 0.5, cloudHeightNorm);
 
     let cloudShape = pow(weather, 0.3 + 1.5 * smoothstep(0.2, 0.5, cloudHeightNorm));
@@ -348,7 +348,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
         let org_cs = vec3f(0.0);
         let dir_cs = input.view_dir_cs;
         let sun_direction_ws = normalize( vec3f(0.6, 0.45, -0.8) );
-        var sun_power = vec3f(1.0, 0.9, 0.6) * 750.0 * (sin(camera.time) + 1.0);
+        var sun_power = vec3f(1.0, 0.9, 0.6) * 200.0; //750.0 * (sin(camera.time) + 1.0);
         let earth_center_ws = vec3f(0.0, -EARTH_RADIUS, 0.0);
         let sun_direction_cs = normalize((camera.view * vec4f(sun_direction_ws, 0.0)).xyz);
         let earth_center_cs = (camera.view * vec4f(earth_center_ws, 1.0)).xyz;

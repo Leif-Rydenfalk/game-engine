@@ -866,30 +866,35 @@ impl<'window> WgpuCtx<'window> {
     /// Updates the camera uniform buffer
     pub fn update_camera_uniform(
         &mut self,
-        view_proj: Matrix4<f32>,
-        inv_view_proj: Matrix4<f32>,
+        view_proj: Matrix4<f32>,     // Current UNJITTERED view_proj
+        inv_view_proj: Matrix4<f32>, // Current UNJITTERED inv_view_proj
         view: Matrix4<f32>,
         inv_view: Matrix4<f32>,
         position: [f32; 3],
     ) {
-        // let jitter = Self::get_jitter_offset(
-        //     self.frame_index,
-        //     self.surface_config.width,
-        //     self.surface_config.height,
-        // );
+        // --- GET JITTER ---
+        // Re-enable this!
+        let jitter = Self::get_jitter_offset(
+            self.frame_index,
+            self.surface_config.width,
+            self.surface_config.height,
+        );
+        // let jitter = [0.0, 0.0]; // Keep commented out or remove for TAA
 
-        let jitter = [0.0, 0.0];
-
+        // --- CALCULATE JITTERED MATRICES FOR CURRENT FRAME ---
         let jitter_matrix =
             Matrix4::from_translation(cgmath::Vector3::new(jitter[0], jitter[1], 0.0));
-        let jittered_view_proj = jitter_matrix * view_proj; // Apply jitter *after* projection
-        let jittered_inv_view_proj = jittered_view_proj.invert().unwrap_or(Matrix4::identity());
+        let jittered_view_proj = jitter_matrix * view_proj; // Apply jitter
+        let jittered_inv_view_proj = jittered_view_proj.invert().unwrap_or(Matrix4::identity()); // Inverse of JITTERED matrix! Correct!
 
+        // --- PREPARE TAA UNIFORM (Previous UNJITTERED + Current Jitter) ---
         let taa_camera_uniform = TAACameraUniform {
-            prev_view_proj: self.prev_view_proj.into(), // Send previous frame's VP
-            prev_inv_view_proj: self.prev_inv_view_proj.into(), // Send previous frame's inverse VP
-            jitter_offset: jitter, // Send current jitter (optional, might not be needed if VP is jittered)
-            _padding: [0.0; 2],    // Adjust as needed
+            // Use the UNJITTERED matrices stored from the *last* frame
+            prev_view_proj: self.prev_view_proj.into(),
+            prev_inv_view_proj: self.prev_inv_view_proj.into(),
+            // Provide the CURRENT frame's jitter offset
+            jitter_offset: jitter,
+            _padding: [0.0; 2],
         };
 
         self.queue.write_buffer(
@@ -898,11 +903,10 @@ impl<'window> WgpuCtx<'window> {
             bytemuck::cast_slice(&[taa_camera_uniform]),
         );
 
+        // --- PREPARE MAIN CAMERA UNIFORM (Current JITTERED) ---
         let camera_uniform = CameraUniform {
-            // view_proj: jittered_view_proj.into(), // Send CURRENT JITTERED VP
-            // inv_view_proj: jittered_inv_view_proj.into(), // Send CURRENT JITTERED INV VP
-            view_proj: view_proj.into(),
-            inv_view_proj: inv_view_proj.into(),
+            view_proj: jittered_view_proj.into(), // Use JITTERED view_proj
+            inv_view_proj: jittered_inv_view_proj.into(), // Use JITTERED inv_view_proj! Correct!
             view: view.into(),
             inv_view: inv_view.into(),
             position,
@@ -920,9 +924,9 @@ impl<'window> WgpuCtx<'window> {
             bytemuck::cast_slice(&[camera_uniform]),
         );
 
-        // --- Store previous matrices for NEXT frame ---
-        self.prev_view_proj = view_proj; // Store the UNJITTERED VP
-        self.prev_inv_view_proj = inv_view_proj; // Store the UNJITTERED inverse
+        // --- STORE CURRENT *UNJITTERED* MATRICES FOR *NEXT* FRAME ---
+        self.prev_view_proj = view_proj; // Store the UNJITTERED VP received this frame
+        self.prev_inv_view_proj = inv_view_proj; // Store the UNJITTERED INV VP received this frame
     }
 
     /// Resizes rendering surfaces
