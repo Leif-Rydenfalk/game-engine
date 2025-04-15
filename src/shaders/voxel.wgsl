@@ -325,7 +325,7 @@ fn fs_main(input: VertexOutput) -> FragmentOutput {
     }
 
     // --- Final color processing ---
-    col = pow(col, vec3f(1.7));
+    col = pow(col * 1.3, vec3f(1.8));
     col = ACESFilm(col);       
 
     // --- Assign final values to output struct ---
