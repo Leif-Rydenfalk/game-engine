@@ -32,35 +32,35 @@ const LOW_SCATTER: vec3f = vec3f(1.0, 0.7, 0.5);
 
 // --- Ported Helper Functions ---
 
-fn hash1f( n: f32 ) -> f32 { return fract(sin(n)*43758.5453); }
-fn hash2f( p: vec2f ) -> f32 { return fract(sin(dot(p,vec2f(127.1,311.7)))*43758.5453123); }
+fn hash1f(n: f32) -> f32 { return fract(sin(n) * 43758.5453); }
+fn hash2f(p: vec2f) -> f32 { return fract(sin(dot(p, vec2f(127.1, 311.7))) * 43758.5453123); }
 
 // Noise functions remain the same internally
-fn noise3d( x: vec3f ) -> f32 { // Expects world-space input from clouds()
+fn noise3d(x: vec3f) -> f32 { // Expects world-space input from clouds()
     let p = floor(x);
     var f = fract(x);
-    f = f*f*(3.0-2.0*f);
+    f = f * f * (3.0-2.0 * f);
     let coord = (p + f + 0.5) / 32.0;
     return textureSampleLevel(gray_cube_noise_texture, terrain_sampler, coord, 0.0).r;
 }
 
-fn noise2d( p: vec2f ) -> f32 { // Expects world-space input if used similarly
-    let i = floor( p );
-    var f = fract( p );
-    f = f*f*(3.0-2.0*f);
-    return -1.0 + 2.0 * mix( mix( hash2f( i + vec2f(0.0,0.0) ),
-                                  hash2f( i + vec2f(1.0,0.0) ), f.x),
-                             mix( hash2f( i + vec2f(0.0,1.0) ),
-                                  hash2f( i + vec2f(1.0,1.0) ), f.x), f.y);
+fn noise2d(p: vec2f) -> f32 { // Expects world-space input if used similarly
+    let i = floor(p);
+    var f = fract(p);
+    f = f * f * (3.0-2.0 * f);
+    return -1.0 + 2.0 * mix(mix(hash2f(i + vec2f(0.0, 0.0)),
+        hash2f(i + vec2f(1.0, 0.0)), f.x),
+        mix(hash2f(i + vec2f(0.0, 1.0)),
+        hash2f(i + vec2f(1.0, 1.0)), f.x), f.y);
 }
 
-fn fbm3d( p_in: vec3f ) -> f32 { // Expects world-space input from clouds()
-    let m = mat3x3f( 0.00, -0.80, -0.60, 0.80,  0.36, -0.48, 0.60, -0.48,  0.64 );
+fn fbm3d(p_in: vec3f) -> f32 { // Expects world-space input from clouds()
+    let m = mat3x3f(0.00, -0.80, -0.60, 0.80, 0.36, -0.48, 0.60, -0.48, 0.64);
     var p = p_in;
     var f: f32 = 0.0;
-    f  = 0.5000 * noise3d( p ); p = m * p * 2.02;
-    f += 0.2500 * noise3d( p ); p = m * p * 2.03;
-    f += 0.1250 * noise3d( p );
+    f = 0.5000 * noise3d(p); p = m * p * 2.02;
+    f += 0.2500 * noise3d(p); p = m * p * 2.03;
+    f += 0.1250 * noise3d(p);
     return f;
 }
 
@@ -81,15 +81,15 @@ fn intersectSphere(origin_cs: vec3f, dir_cs: vec3f, spherePos_cs: vec3f, sphereR
     let b = 2.0 * dot(dir_cs, oc_cs);
     let c = dot(oc_cs, oc_cs) - sphereRad * sphereRad;
     let disc = b * b - 4.0 * c;
-    if (disc < 0.0) { return -1.0; }
+    if disc < 0.0 { return -1.0; }
     let sgn_b = select(1.0, -1.0, b < 0.0);
     let q = -0.5 * (b + sgn_b * sqrt(disc));
     let t0 = q; // Assuming dir_cs is normalized, a=1
     let t1 = c / q;
-    if (t0 < 0.0) {
-        if (t1 < 0.0) { return -1.0; } else { return t1; }
+    if t0 < 0.0 {
+        if t1 < 0.0 { return -1.0; } else { return t1; }
     } else {
-        if (t1 < 0.0) { return t0; } else { return min(t0, t1); }
+        if t1 < 0.0 { return t0; } else { return min(t0, t1); }
     }
 }
 
@@ -129,7 +129,7 @@ fn clouds(p_cs: vec3f, earth_center_cs: vec3f, fast: bool) -> CloudInfo {
     var info: CloudInfo;
     info.cloud_height_norm = cloudHeightNorm;
 
-    if (cloudShape <= 0.0) {
+    if cloudShape <= 0.0 {
         info.density = 0.0;
         return info;
     }
@@ -138,12 +138,12 @@ fn clouds(p_cs: vec3f, earth_center_cs: vec3f, fast: bool) -> CloudInfo {
    // p_noise.x += camera.time * 12.3;
     // Use WORLD SPACE position for fbm3d (which uses noise3d)
     var den = max(0.0, cloudShape - 0.7 * fbm3d(p_noise * 0.01));
-    if (den <= 0.0) {
+    if den <= 0.0 {
         info.density = 0.0;
         return info;
     }
 
-    if (fast) {
+    if fast {
         info.density = largeWeather * 0.2 * min(1.0, 5.0 * den);
         return info;
     }
@@ -166,10 +166,10 @@ fn numericalMieFit(costh: f32) -> f32 {
     );
     let p1 = costh + bestParams[3];
     let expValues = exp(vec4f(bestParams[1] * costh + bestParams[2],
-                              bestParams[5] * p1 * p1,
-                              bestParams[6] * costh,
-                              bestParams[9] * costh));
-    let expValWeight= vec4f(bestParams[0], bestParams[4], bestParams[7], bestParams[8]);
+        bestParams[5] * p1 * p1,
+        bestParams[6] * costh,
+        bestParams[9] * costh));
+    let expValWeight = vec4f(bestParams[0], bestParams[4], bestParams[7], bestParams[8]);
     return dot(expValues, expValWeight);
 }
 
@@ -178,7 +178,7 @@ fn HenyeyGreenstein(mu: f32, inG: f32) -> f32 {
     let g2 = inG * inG;
     let denom_term = 1.0 + g2 - 2.0 * inG * mu;
     let denom = pow(max(0.0001, denom_term), 1.5) * 4.0 * PI;
-    if (denom < 0.00001) { return 0.0; }
+    if denom < 0.00001 { return 0.0; }
     return (1.0 - g2) / denom;
 }
 
@@ -200,7 +200,7 @@ fn lightRay(p_cs_in: vec3f, phaseFunction: f32, dC: f32, mu: f32, sun_direction_
     var lighRayDen = 0.0;
 
     // Use camera-space position for hash input seeding
-    p_cs += sun_direction_cs * stepL * hash1f(dot(p_cs, vec3f(12.256, 2.646, 6.356)) + camera.time*0.5);
+    p_cs += sun_direction_cs * stepL * hash1f(dot(p_cs, vec3f(12.256, 2.646, 6.356)) + camera.time * 0.5);
 
     for (var j = 0; j < nbSampleLight; j = j + 1) {
         // March along the light ray in camera space
@@ -210,7 +210,7 @@ fn lightRay(p_cs_in: vec3f, phaseFunction: f32, dC: f32, mu: f32, sun_direction_
         lighRayDen += cloud_info.density;
     }
 
-    if (fast) {
+    if fast {
         return (0.5 * exp(-0.4 * stepL * lighRayDen) + max(0.0, -mu * 0.6 + 0.3) * exp(-0.02 * stepL * lighRayDen)) * phaseFunction;
     }
 
@@ -253,7 +253,7 @@ fn skyRay(org_cs: vec3f, dir_cs: vec3f, sun_direction_cs: vec3f, sun_power: vec3
     let background_base = vec3f(0.4, 0.6, 1.0);
     var background = 9.0 * background_base;
 
-    if (distToAtmStart >= distToAtmEnd || distToAtmEnd < 0.0) {
+    if distToAtmStart >= distToAtmEnd || distToAtmEnd < 0.0 {
         // Calculate background color directly (no cloud intersection)
         let background_base_bg = mix(vec3f(0.2, 0.52, 1.0), vec3f(0.8, 0.95, 1.0), pow(0.5 + 0.5 * mu, 15.0));
         // *** Use World Space Y for horizon mix ***
@@ -273,13 +273,13 @@ fn skyRay(org_cs: vec3f, dir_cs: vec3f, sun_direction_cs: vec3f, sun_power: vec3
 
         // *** Optimization: Use World Space Y direction (original intent) ***
         // Keep a small threshold to avoid marching when looking straight down. Adjust if needed.
-        if (dir_ws.y > -0.1) { // Allow marching slightly below horizon
+        if dir_ws.y > -0.1 { // Allow marching slightly below horizon
             for (var i = 0; i < nbSample; i = i + 1) {
                 // Call clouds with camera-space position and earth center
                 let cloud_info = clouds(p_cs, earth_center_cs, fast);
                 let density = cloud_info.density;
 
-                if (density > 0.001) {
+                if density > 0.001 {
                     // Call lightRay with camera-space inputs
                     let intensity = lightRay(p_cs, phaseFunction, density, mu, sun_direction_cs, earth_center_cs, cloud_info.cloud_height_norm, fast);
 
@@ -291,11 +291,11 @@ fn skyRay(org_cs: vec3f, dir_cs: vec3f, sun_direction_cs: vec3f, sun_power: vec3
                     let radiance = (ambient + sun_power * intensity);
 
                     let BeerTerm = exp(-density * stepS);
-                    let Sint = select( stepS, (1.0 - BeerTerm) / density, density > 0.00001);
+                    let Sint = select(stepS, (1.0 - BeerTerm) / density, density > 0.00001);
                     color += T * radiance * density * Sint;
                     T *= BeerTerm;
 
-                    if ( T <= 0.05) { break; }
+                    if T <= 0.05 { break; }
                 }
                 // Step along ray in camera space
                 p_cs += dir_cs * stepS;
@@ -342,12 +342,17 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
     let depth = textureLoad(depth_texture, clamped_coord, 0).r;
 
 
-    const SKY_DEPTH_THRESHOLD = 1000000.0; 
-                     
+    const SKY_DEPTH_THRESHOLD = 1000000.0;
+
     if depth >= SKY_DEPTH_THRESHOLD { // Sky pixel check potentially modified
+        const PERFORMANCE_MODE = false;
+        if PERFORMANCE_MODE {
+            return vec4f(0.2, 0.6, 1.0, 1.0);
+        }
+
         let org_cs = vec3f(0.0);
         let dir_cs = input.view_dir_cs;
-        let sun_direction_ws = normalize( vec3f(0.6, 0.45, -0.8) );
+        let sun_direction_ws = normalize(vec3f(0.6, 0.45, -0.8));
         var sun_power = vec3f(1.0, 0.9, 0.6) * 300.0; //750.0 * (sin(camera.time) + 1.0);
         let earth_center_ws = vec3f(0.0, -EARTH_RADIUS, 0.0);
         let sun_direction_cs = normalize((camera.view * vec4f(sun_direction_ws, 0.0)).xyz);
@@ -370,7 +375,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
         // final_color = pow(final_color, vec3f(1.0 / 2.2)); // Gamma correction instead of squaring
 
         final_color = pow(final_color, vec3(2.0));
- 
+
         final_color = ACESFilm(final_color);
 
         return vec4f(final_color, 1.0);
