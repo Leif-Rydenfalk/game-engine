@@ -105,11 +105,11 @@ fn map(p: vec3f) -> f32 {
     // var mask = textureSample(gray_cube_noise_texture, terrain_sampler, q * 0.05).r * 1.7;
     // mask = smax(mask, p.y - settings.max_height, 0.6);
 
-    //var mask = textureSample(gray_cube_noise_texture, terrain_sampler, q * 0.05).r * 1.7;
-    //d = smax(d, -mask, 6.0);
+    // var mask = textureSample(gray_cube_noise_texture, terrain_sampler, q * 0.05).r * 7.9;
+    // d = smax(d, -mask, 6.0);
 
 
-    let sphere_d = length(p) - 10.0;
+    let sphere_d = length(p - vec3f(sin(camera.time) * 10.0, 0.0, 0.0)) - 20.0;
     // d = smin(d, sphere_d, 6.0);
     d = smax(d, -sphere_d, 6.0);
 
